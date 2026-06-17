@@ -25,13 +25,20 @@ def make(ticker, rev, prior, ocf, capex, sbc, shares_now, shares_prior,
 
 
 # --- acceptance fixtures ---------------------------------------------------
+# ticker, rev, prior, ocf, capex, sbc, shares_now, shares_prior, mcap, fwd_pe, fwd_growth
 ACCEPTANCE = {
-    "CleanCompounder":     make("CleanCompounder", 30000, 24000, 12000, 1500, 1500, 1000, 1010, 270000, 28, 22),
-    "HyperGrowthNoProfit": make("HyperGrowthNoProfit", 3000, 2000, 600, 150, 400, 500, 520, 54000, None, 40),
-    "PriceyButProfitable": make("PriceyButProfitable", 20000, 16000, 7000, 1000, 1200, 1500, 1510, 200000, 60, 12),
-    "OverpricedSlowGrower": make("OverpricedSlowGrower", 50000, 46300, 18000, 3000, 2000, 2000, 2000, 600000, 24, 9),
-    "DilutionTrap":        make("DilutionTrap", 5000, 4000, 1400, 200, 1100, 800, 880, 60000, 35, 30),
-    "BorderlineForty":     make("BorderlineForty", 10000, 8800, 2600, 600, 700, 900, 905, 70000, 30, 18),
+    "CleanCompounder": make(
+        "CleanCompounder", 30000, 24000, 12000, 1500, 1500, 1000, 1010, 270000, 28, 22),
+    "HyperGrowthNoProfit": make(
+        "HyperGrowthNoProfit", 3000, 2000, 600, 150, 400, 500, 520, 54000, None, 40),
+    "PriceyButProfitable": make(
+        "PriceyButProfitable", 20000, 16000, 7000, 1000, 1200, 1500, 1510, 200000, 60, 12),
+    "OverpricedSlowGrower": make(
+        "OverpricedSlowGrower", 50000, 46300, 18000, 3000, 2000, 2000, 2000, 600000, 24, 9),
+    "DilutionTrap": make(
+        "DilutionTrap", 5000, 4000, 1400, 200, 1100, 800, 880, 60000, 35, 30),
+    "BorderlineForty": make(
+        "BorderlineForty", 10000, 8800, 2600, 600, 700, 900, 905, 70000, 30, 18),
 }
 
 
