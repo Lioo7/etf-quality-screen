@@ -1,0 +1,7 @@
+# Runtime
+requests>=2.31      # HTTP for Wikipedia/issuer/FMP fetches
+yfinance>=0.2.40    # default free data provider; pulls in pandas + lxml/html5lib
+tabulate>=0.9       # aligned CLI tables
+
+# Dev / test
+pytest>=8.0
