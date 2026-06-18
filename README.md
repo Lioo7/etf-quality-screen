@@ -5,6 +5,13 @@ constituents — or any ETF/ticker list — through a four-filter, two-track
 quality-growth methodology, pulling live fundamentals from a **pluggable** data
 provider.
 
+> ⚠️ **Disclaimer — not investment advice.** This tool is for **educational and
+> screening purposes only**. It is not investment advice or a recommendation to
+> buy or sell any security. Data is pulled from free/third-party sources and may
+> be **inaccurate, incomplete, or stale** (see the confidence flags). Always
+> verify figures independently and consult a qualified professional before making
+> any financial decision.
+
 Screening logic and data sourcing are kept strictly separate:
 
 | Module | Responsibility | Network? |
@@ -196,6 +203,11 @@ The screen **never invents numbers.** Missing or blocked data → the name is
 skipped and listed under "could not source." A short (or empty) shortlist is an
 acceptable, expected result for a strict screen — thresholds are never loosened
 to populate the table.
+
+That integrity is about *faithfully reporting what the sources say* — it is not a
+guarantee the underlying data is correct. As noted up top, this is an educational
+screening tool, **not investment advice**; verify independently before acting on
+any output.
 
 ## Development
 
