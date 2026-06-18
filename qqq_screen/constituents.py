@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import io
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 USER_AGENT = "qqq-quality-screen/0.1 (https://github.com; research tool)"
@@ -34,12 +34,14 @@ class Holdings:
     source: str       # human-readable origin (URL or "bundled static list")
     as_of: str        # ISO date the data is current as of
     is_stale: bool     # True when served from the bundled fallback
+    names: dict[str, str] = field(default_factory=dict)  # ticker -> company name
 
 
 @dataclass
 class _WikiSource:
     url: str
     ticker_columns: tuple[str, ...]  # candidate column names holding the symbol
+    name_columns: tuple[str, ...] = ()  # candidate column names holding the name
 
 
 # Registry of ETF -> Wikipedia index table.
@@ -47,10 +49,12 @@ _WIKI: dict[str, _WikiSource] = {
     "QQQ": _WikiSource(
         "https://en.wikipedia.org/wiki/Nasdaq-100",
         ("Ticker", "Symbol"),
+        ("Company", "Security"),
     ),
     "SPY": _WikiSource(
         "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
         ("Symbol", "Ticker"),
+        ("Security", "Company"),
     ),
 }
 
@@ -82,9 +86,10 @@ def resolve(etf: str) -> Holdings:
     wiki = _WIKI.get(etf)
     if wiki is not None:
         try:
-            tickers = _from_wikipedia(wiki)
+            tickers, names = _from_wikipedia(wiki)
             if tickers:
-                return Holdings(etf, tickers, wiki.url, date.today().isoformat(), False)
+                return Holdings(
+                    etf, tickers, wiki.url, date.today().isoformat(), False, names)
         except Exception as exc:  # network/parse failure -> fall back
             print(
                 f"WARNING: could not resolve {etf} from Wikipedia ({exc}); "
@@ -94,8 +99,8 @@ def resolve(etf: str) -> Holdings:
     return _from_static(etf)
 
 
-def _from_wikipedia(wiki: _WikiSource) -> list[str]:
-    """Fetch and parse the constituent symbols from a Wikipedia index table."""
+def _from_wikipedia(wiki: _WikiSource) -> tuple[list[str], dict[str, str]]:
+    """Fetch and parse constituent symbols (and names) from a Wikipedia table."""
     import pandas as pd
     import requests
 
@@ -103,16 +108,23 @@ def _from_wikipedia(wiki: _WikiSource) -> list[str]:
     resp.raise_for_status()
     tables = pd.read_html(io.StringIO(resp.text))
     for table in tables:
-        for col in wiki.ticker_columns:
-            if col in table.columns:
-                symbols = (
-                    table[col].dropna().astype(str)
-                    .str.strip().str.upper().tolist()
-                )
-                symbols = [s for s in symbols if _looks_like_ticker(s)]
-                if len(symbols) >= 50:  # guard against grabbing the wrong table
-                    return [_normalize(s) for s in symbols]
-    return []
+        tcol = next((c for c in wiki.ticker_columns if c in table.columns), None)
+        if tcol is None:
+            continue
+        ncol = next((c for c in wiki.name_columns if c in table.columns), None)
+        tickers: list[str] = []
+        names: dict[str, str] = {}
+        for _, row in table.iterrows():
+            sym = str(row[tcol]).strip().upper()
+            if not _looks_like_ticker(sym):
+                continue
+            norm = _normalize(sym)
+            tickers.append(norm)
+            if ncol is not None:
+                names[norm] = str(row[ncol]).strip()
+        if len(tickers) >= 50:  # guard against grabbing the wrong table
+            return tickers, names
+    return [], {}
 
 
 def _from_static(etf: str) -> Holdings:

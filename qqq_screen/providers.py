@@ -29,7 +29,8 @@ from .screen import Company
 _COMPANY_FIELDS = (
     "ticker", "revenue_ttm", "revenue_ttm_prior", "ocf_ttm", "capex_ttm",
     "sbc_ttm", "diluted_shares_now", "diluted_shares_prior", "market_cap",
-    "forward_pe", "forward_eps_growth", "low_confidence",
+    "forward_pe", "forward_eps_growth", "low_confidence", "name", "basis",
+    "sbc_assumed_zero", "overridden_fields",
 )
 
 
@@ -54,7 +55,9 @@ class DataProvider(ABC):
         if self._cache is not None:
             cached = self._cache.get(f"{self.name}_{ticker}")
             if cached is not None:
-                return Company(**{k: cached.get(k) for k in _COMPANY_FIELDS})
+                # Only pass keys present in the entry so older caches fall back
+                # to the dataclass defaults for newly added fields.
+                return Company(**{k: cached[k] for k in _COMPANY_FIELDS if k in cached})
         company = self._fetch_uncached(ticker)
         if self._cache is not None:
             self._cache.set(f"{self.name}_{ticker}", asdict(company))
@@ -72,11 +75,14 @@ class MockProvider(DataProvider):
     #: A tiny, hand-built universe mirroring the acceptance-test archetypes.
     DATA: dict[str, Company] = {
         "MSFT": Company("MSFT", 245000, 212000, 118000, 28000, 10000,
-                        7430, 7450, 3100000, 32.0, 14.0),
+                        7430, 7450, 3100000, 32.0, 14.0,
+                        name="Microsoft Corporation", basis="TTM"),
         "GOOGL": Company("GOOGL", 328000, 283000, 110000, 32000, 22000,
-                         12200, 12500, 2100000, 21.0, 16.0),
+                         12200, 12500, 2100000, 21.0, 16.0,
+                         name="Alphabet Inc.", basis="TTM"),
         "CRWD": Company("CRWD", 3500, 2400, 1100, 120, 500, 245, 235,
-                        80000, None, 30.0),
+                        80000, None, 30.0,
+                        name="CrowdStrike Holdings, Inc.", basis="TTM"),
     }
 
     def _fetch_uncached(self, ticker: str) -> Company:
@@ -94,11 +100,16 @@ class YFinanceProvider(DataProvider):
 
     Known limitations (handled honestly, never papered over):
 
-    * Yahoo usually exposes only ~4-6 quarters, so the prior-TTM window may be
-      unavailable — we fall back to **annual** year-over-year for revenue growth
-      and prior diluted shares, flagged as low-confidence.
-    * **Stock-based compensation is frequently missing.** When it is, we raise
-      (skip the name) rather than assume 0 — SBC is a real economic cost here.
+    * **One accounting basis per company.** When Yahoo exposes a full trailing
+      twelve months of *both* income and cash-flow quarters, every metric is
+      computed on a true TTM basis. Otherwise the whole company falls back to an
+      **annual** basis — revenue *and* OCF/capex/SBC all from the latest fiscal
+      year — so growth, FCF margin, SBC%, and Rule of 40 share one base. The
+      basis used is recorded on the Company and flagged when it is annual.
+    * **Stock-based compensation may be absent.** If the cash-flow statement is
+      retrieved but has no SBC line, SBC is treated as 0 and the name is flagged
+      ``sbc_assumed_zero`` (utilities/staples genuinely report ~0). Only when the
+      cash-flow statement cannot be retrieved at all is the name skipped.
     * Forward EPS growth derived from Yahoo's ``forwardEps``/``trailingEps`` is a
       rough proxy and is always flagged low-confidence.
     """
@@ -114,78 +125,107 @@ class YFinanceProvider(DataProvider):
             ) from exc
 
         tk = yf.Ticker(ticker)
-        low_conf: list[str] = []
-
-        q_inc = _df(tk, "quarterly_income_stmt", "quarterly_financials")
-        a_inc = _df(tk, "income_stmt", "financials")
-        revenue_ttm, revenue_prior = self._revenue(ticker, q_inc, a_inc, low_conf)
-        shares_now, shares_prior = self._shares(ticker, q_inc, a_inc, low_conf)
-
-        q_cf = _df(tk, "quarterly_cashflow", "quarterly_cash_flow")
-        a_cf = _df(tk, "cashflow", "cash_flow")
-        ocf = _ttm(ticker, "operating cash flow", q_cf, a_cf, low_conf,
-                   ["Operating Cash Flow", "Total Cash From Operating Activities"])
-        capex = abs(_ttm(ticker, "capital expenditure", q_cf, a_cf, low_conf,
-                         ["Capital Expenditure", "Capital Expenditures"]))
-        sbc = _ttm(ticker, "stock-based compensation", q_cf, a_cf, low_conf,
-                   ["Stock Based Compensation"])
-
-        info = _info(tk)
-        market_cap = info.get("marketCap")
-        if not market_cap:
-            raise DataUnavailable(f"{ticker}: no market cap from yfinance")
-
-        forward_pe = info.get("forwardPE")
-        fwd_eps, ttm_eps = info.get("forwardEps"), info.get("trailingEps")
-        if fwd_eps and ttm_eps and ttm_eps > 0:
-            forward_eps_growth = (fwd_eps / ttm_eps - 1) * 100
-        else:
-            forward_eps_growth = 0.0
-        low_conf.append("forward EPS growth is a rough Yahoo proxy")
-
-        return Company(
-            ticker=ticker, revenue_ttm=revenue_ttm, revenue_ttm_prior=revenue_prior,
-            ocf_ttm=ocf, capex_ttm=capex, sbc_ttm=sbc,
-            diluted_shares_now=shares_now, diluted_shares_prior=shares_prior,
-            market_cap=float(market_cap),
-            forward_pe=float(forward_pe) if forward_pe else None,
-            forward_eps_growth=forward_eps_growth, low_confidence=low_conf,
+        return _extract_yf(
+            ticker,
+            q_inc=_df(tk, "quarterly_income_stmt", "quarterly_financials"),
+            a_inc=_df(tk, "income_stmt", "financials"),
+            q_cf=_df(tk, "quarterly_cashflow", "quarterly_cash_flow"),
+            a_cf=_df(tk, "cashflow", "cash_flow"),
+            info=_info(tk),
         )
 
-    def _revenue(self, ticker, q_inc, a_inc, low_conf):
-        labels = ["Total Revenue", "Operating Revenue"]
-        vals = _row(q_inc, labels)
-        if len(vals) >= 8:
-            return sum(vals[:4]), sum(vals[4:8])
-        # Fall back to annual YoY when 8 quarters aren't available.
-        ann = _row(a_inc, labels)
-        if len(ann) >= 2:
-            low_conf.append("revenue growth from annual YoY (not TTM)")
-            return ann[0], ann[1]
-        raise DataUnavailable(f"{ticker}: insufficient revenue history from yfinance")
 
-    def _shares(self, ticker, q_inc, a_inc, low_conf):
-        labels = ["Diluted Average Shares", "Diluted Shares", "Basic Average Shares"]
-        vals = _row(q_inc, labels)
-        if len(vals) >= 5:  # current quarter vs same quarter a year earlier
-            return vals[0], vals[4]
-        ann = _row(a_inc, labels)
-        if len(ann) >= 2:
-            low_conf.append("diluted shares from annual YoY")
-            return ann[0], ann[1]
-        raise DataUnavailable(f"{ticker}: no diluted share history from yfinance")
+# Statement line labels (Yahoo varies these across versions/tickers).
+_REV = ["Total Revenue", "Operating Revenue"]
+_SHARES = ["Diluted Average Shares", "Diluted Shares", "Basic Average Shares"]
+_OCF = ["Operating Cash Flow", "Total Cash From Operating Activities"]
+_CAPEX = ["Capital Expenditure", "Capital Expenditures"]
+_SBC = ["Stock Based Compensation"]
 
 
-def _ttm(ticker, what, q_df, a_df, low_conf, labels):
-    """Sum the 4 most recent quarters for ``labels``; fall back to latest annual."""
-    vals = _row(q_df, labels)
-    if len(vals) >= 4:
-        return sum(vals[:4])
-    ann = _row(a_df, labels)
-    if ann:
-        low_conf.append(f"{what} from latest annual (not 4-quarter TTM)")
-        return ann[0]
-    raise DataUnavailable(f"{ticker}: {what} unavailable from yfinance")
+def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info) -> Company:
+    """Build a Company from Yahoo statement frames, on a single consistent basis.
+
+    Factored out of the provider (no network here) so the basis-selection and
+    SBC-assumed-0 logic is unit-testable with hand-built DataFrames.
+    """
+    # Cash flow entirely absent -> genuinely no data -> skip the name.
+    if q_cf is None and a_cf is None:
+        raise DataUnavailable(f"{ticker}: cash-flow statement unavailable from yfinance")
+
+    low_conf: list[str] = []
+    rev_q = _row(q_inc, _REV)
+    shares_q = _row(q_inc, _SHARES)
+    ocf_q = _row(q_cf, _OCF)
+
+    # TTM requires a full trailing year of BOTH income and cash flow.
+    ttm_ok = len(rev_q) >= 8 and len(shares_q) >= 5 and len(ocf_q) >= 4
+
+    if ttm_ok:
+        basis = "TTM"
+        revenue_ttm, revenue_prior = sum(rev_q[:4]), sum(rev_q[4:8])
+        shares_now, shares_prior = shares_q[0], shares_q[4]
+        cf = q_cf
+
+        def amount(labels):
+            vals = _row(cf, labels)
+            return (sum(vals[:4]), True) if len(vals) >= 4 else (None, False)
+    else:
+        basis = "annual"
+        rev_a = _row(a_inc, _REV)
+        shares_a = _row(a_inc, _SHARES)
+        if len(rev_a) < 2:
+            raise DataUnavailable(f"{ticker}: insufficient revenue history from yfinance")
+        if len(shares_a) < 2:
+            raise DataUnavailable(f"{ticker}: no diluted share history from yfinance")
+        if a_cf is None:
+            raise DataUnavailable(f"{ticker}: insufficient cash-flow history from yfinance")
+        revenue_ttm, revenue_prior = rev_a[0], rev_a[1]
+        shares_now, shares_prior = shares_a[0], shares_a[1]
+        cf = a_cf
+        low_conf.append("metrics on ANNUAL basis (Yahoo exposed <8 quarters)")
+
+        def amount(labels):
+            vals = _row(cf, labels)
+            return (vals[0], True) if vals else (None, False)
+
+    ocf, ocf_found = amount(_OCF)
+    capex_raw, capex_found = amount(_CAPEX)
+    if not ocf_found or not capex_found:
+        raise DataUnavailable(
+            f"{ticker}: operating cash flow / capex unavailable from yfinance"
+        )
+    capex = abs(capex_raw)
+
+    sbc_raw, sbc_found = amount(_SBC)
+    sbc_assumed_zero = not sbc_found
+    sbc = sbc_raw if sbc_found else 0.0
+    if sbc_assumed_zero:
+        low_conf.append("SBC not reported by source - assumed 0")
+
+    market_cap = info.get("marketCap")
+    if not market_cap:
+        raise DataUnavailable(f"{ticker}: no market cap from yfinance")
+
+    forward_pe = info.get("forwardPE")
+    fwd_eps, ttm_eps = info.get("forwardEps"), info.get("trailingEps")
+    if fwd_eps and ttm_eps and ttm_eps > 0:
+        forward_eps_growth = (fwd_eps / ttm_eps - 1) * 100
+    else:
+        forward_eps_growth = 0.0
+    low_conf.append("forward EPS growth is a rough Yahoo proxy")
+
+    name = info.get("shortName") or info.get("longName") or ticker
+
+    return Company(
+        ticker=ticker, revenue_ttm=revenue_ttm, revenue_ttm_prior=revenue_prior,
+        ocf_ttm=ocf, capex_ttm=capex, sbc_ttm=sbc,
+        diluted_shares_now=shares_now, diluted_shares_prior=shares_prior,
+        market_cap=float(market_cap),
+        forward_pe=float(forward_pe) if forward_pe else None,
+        forward_eps_growth=forward_eps_growth, low_confidence=low_conf,
+        name=name, basis=basis, sbc_assumed_zero=sbc_assumed_zero,
+    )
 
 
 def _df(tk, *attrs):
@@ -276,11 +316,17 @@ class FMPProvider(DataProvider):
 
         ocf = sum(q["operatingCashFlow"] for q in cf[:4])
         capex = abs(sum(q["capitalExpenditure"] for q in cf[:4]))
-        sbc = sum(q.get("stockBasedCompensation", 0) for q in cf[:4])
+        sbc_found = any(q.get("stockBasedCompensation") is not None for q in cf[:4])
+        sbc = sum(q.get("stockBasedCompensation") or 0 for q in cf[:4])
+
+        low_conf: list[str] = []
+        if not sbc_found:
+            low_conf.append("SBC not reported by source - assumed 0")
 
         quote = self._get(f"quote/{ticker}")[0]
         market_cap = quote["marketCap"]
         price, ttm_eps = quote.get("price"), quote.get("eps")
+        name = quote.get("name") or ticker
 
         forward_pe, forward_eps_growth = None, 0.0
         est = self._get(f"analyst-estimates/{ticker}", period="annual")
@@ -295,7 +341,8 @@ class FMPProvider(DataProvider):
             ocf_ttm=ocf, capex_ttm=capex, sbc_ttm=sbc,
             diluted_shares_now=shares_now, diluted_shares_prior=shares_prior,
             market_cap=market_cap, forward_pe=forward_pe,
-            forward_eps_growth=forward_eps_growth,
+            forward_eps_growth=forward_eps_growth, low_confidence=low_conf,
+            name=name, basis="TTM", sbc_assumed_zero=not sbc_found,
         )
 
 

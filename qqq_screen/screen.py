@@ -53,6 +53,23 @@ class Company:
 
     # Optional provenance / confidence annotations from the data layer.
     low_confidence: list[str] = field(default_factory=list)
+    name: str = ""              # human-readable company name (defaults to ticker)
+    basis: str = ""             # accounting basis used: "TTM", "annual", or ""
+    sbc_assumed_zero: bool = False  # SBC line absent from source -> assumed 0
+    overridden_fields: list[str] = field(default_factory=list)  # from overrides.json
+
+    def __post_init__(self) -> None:
+        # Coerce Nones (e.g. from older cache entries) and default name to ticker.
+        if self.low_confidence is None:
+            self.low_confidence = []
+        if self.overridden_fields is None:
+            self.overridden_fields = []
+        if not self.name:
+            self.name = self.ticker
+
+    @property
+    def manual_override(self) -> bool:
+        return bool(self.overridden_fields)
 
 
 @dataclass
@@ -94,6 +111,27 @@ class Result:
     @property
     def ticker(self) -> str:
         return self.company.ticker
+
+    @property
+    def name(self) -> str:
+        return self.company.name
+
+    @property
+    def basis(self) -> str:
+        return self.company.basis
+
+    @property
+    def sbc_assumed_zero(self) -> bool:
+        return self.company.sbc_assumed_zero
+
+    @property
+    def manual_override(self) -> bool:
+        return self.company.manual_override
+
+    @property
+    def ps_guardrail(self) -> float:
+        """The P/S ceiling for this name (0.5 x revenue growth%)."""
+        return PS_GUARDRAIL_FACTOR * self.growth
 
     @property
     def ps_headroom(self) -> float:

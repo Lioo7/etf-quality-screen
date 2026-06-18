@@ -4,3 +4,6 @@ __pycache__/
 .cache/
 cache/
 .venv/
+overrides.json
+qqq_screen_*.csv
+qqq_screen_*.md
