@@ -22,7 +22,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import date
 
-USER_AGENT = "qqq-quality-screen/0.1 (https://github.com; research tool)"
+USER_AGENT = "etf-quality-screen/0.1 (https://github.com; research tool)"
 
 
 @dataclass

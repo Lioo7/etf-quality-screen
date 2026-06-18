@@ -1,6 +1,6 @@
 """Data sourcing layer — the only place that touches the network.
 
-A :class:`DataProvider` turns a ticker into a :class:`~qqq_screen.screen.Company`
+A :class:`DataProvider` turns a ticker into a :class:`~etf_screen.screen.Company`
 of raw fundamentals. Providers **raise** :class:`DataUnavailable` when a required
 field cannot be sourced; they never fabricate or silently default a value.
 

@@ -3,9 +3,9 @@ ticker normalization."""
 
 import pytest
 
-from qqq_screen.cache import DiskCache
-from qqq_screen.constituents import _looks_like_ticker, _normalize
-from qqq_screen.providers import DataUnavailable, MockProvider
+from etf_screen.cache import DiskCache
+from etf_screen.constituents import _looks_like_ticker, _normalize
+from etf_screen.providers import DataUnavailable, MockProvider
 
 
 def test_mock_provider_returns_known_ticker():
@@ -19,7 +19,7 @@ def test_mock_provider_raises_on_unknown():
 
 
 def test_cache_round_trip(tmp_path, monkeypatch):
-    import qqq_screen.cache as cache_mod
+    import etf_screen.cache as cache_mod
 
     monkeypatch.setattr(cache_mod, "CACHE_ROOT", tmp_path)
     cache = DiskCache("mock")

@@ -35,7 +35,7 @@ class Provenance:
 
 
 def default_filename(universe: str, run_date: str, fmt: str) -> str:
-    return f"qqq_screen_{universe}_{run_date}.{fmt}"
+    return f"etf_screen_{universe}_{run_date}.{fmt}"
 
 
 def _num(x, nd: int = 2) -> str:
@@ -96,7 +96,7 @@ def export(path: Path, fmt: str, prov: Provenance, rows: list[dict]) -> None:
 
 def _prov_lines(prov: Provenance) -> list[str]:
     return [
-        "qqq-quality-screen export",
+        "etf-quality-screen export",
         f"provider: {prov.provider}",
         f"universe: {prov.universe}",
         f"constituents source: {prov.source}",
@@ -119,7 +119,7 @@ def _write_md(path: Path, prov: Provenance, rows: list[dict]) -> None:
         [[row[c] for c in COLUMNS] for row in rows],
         headers=COLUMNS, tablefmt="github",
     )
-    lines = ["# QQQ Quality-Screen Export", ""]
+    lines = ["# ETF Quality-Screen Export", ""]
     lines += [f"- **{ln.split(': ', 1)[0]}**: {ln.split(': ', 1)[1]}"
               if ": " in ln else f"_{ln}_" for ln in _prov_lines(prov)]
     lines += ["", table, ""]

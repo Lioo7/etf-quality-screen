@@ -1,4 +1,4 @@
-# qqq-quality-screen
+# etf-quality-screen
 
 A small, well-tested CLI that screens the current Invesco QQQ (Nasdaq-100)
 constituents — or any ETF/ticker list — through a four-filter, two-track
@@ -9,11 +9,11 @@ Screening logic and data sourcing are kept strictly separate:
 
 | Module | Responsibility | Network? |
 | --- | --- | --- |
-| `qqq_screen/screen.py` | `Company`, `evaluate()`, ranking | No |
-| `qqq_screen/providers.py` | `DataProvider` ABC + yfinance / FMP / Mock | Yes |
-| `qqq_screen/constituents.py` | resolve ETF holdings → tickers | Yes |
-| `qqq_screen/cache.py` | per-day disk cache | No |
-| `qqq_screen/cli.py` | argparse entrypoint + reporting | — |
+| `etf_screen/screen.py` | `Company`, `evaluate()`, ranking | No |
+| `etf_screen/providers.py` | `DataProvider` ABC + yfinance / FMP / Mock | Yes |
+| `etf_screen/constituents.py` | resolve ETF holdings → tickers | Yes |
+| `etf_screen/cache.py` | per-day disk cache | No |
+| `etf_screen/cli.py` | argparse entrypoint + reporting | — |
 
 ## Methodology
 
@@ -59,16 +59,16 @@ key**.
 
 ```bash
 # Default: screen the live Nasdaq-100 via yfinance (no key needed)
-python -m qqq_screen.cli --universe qqq
+python -m etf_screen.cli --universe qqq
 
 # Cheap validation against an explicit ticker list
-python -m qqq_screen.cli --provider yfinance --tickers MSFT,GOOGL,CRWD
+python -m etf_screen.cli --provider yfinance --tickers MSFT,GOOGL,CRWD
 
 # Offline / deterministic demo
-python -m qqq_screen.cli --provider mock --tickers MSFT,GOOGL,CRWD
+python -m etf_screen.cli --provider mock --tickers MSFT,GOOGL,CRWD
 
 # Screen the S&P 500 instead, throttling requests
-python -m qqq_screen.cli --universe spy --throttle 1 --limit 50
+python -m etf_screen.cli --universe spy --throttle 1 --limit 50
 ```
 
 Flags: `--provider {yfinance,fmp,mock}` · `--universe <etf>` · `--tickers a,b,c`
@@ -81,12 +81,12 @@ Flags: `--provider {yfinance,fmp,mock}` · `--universe <etf>` · `--tickers a,b,
 skipped — with every metric, the track label, the rejection/skip reason, and the
 confidence/basis flags, in addition to the console output. A provenance header
 (provider, source, as-of, run date) is included as CSV comment lines or a
-Markdown header block. Default filename: `qqq_screen_<universe>_<YYYY-MM-DD>.<ext>`
+Markdown header block. Default filename: `etf_screen_<universe>_<YYYY-MM-DD>.<ext>`
 (override with `--out`).
 
 ```bash
-python -m qqq_screen.cli --universe qqq --export csv
-python -m qqq_screen.cli --tickers MSFT,GOOGL,CRWD --export md --out shortlist.md
+python -m etf_screen.cli --universe qqq --export csv
+python -m etf_screen.cli --tickers MSFT,GOOGL,CRWD --export md --out shortlist.md
 ```
 
 ### Manual overrides
@@ -112,7 +112,7 @@ use a different file.
 
 ```
 ==============================================================================
-qqq-quality-screen v0.1.0  |  run 2026-06-17
+etf-quality-screen v0.1.0  |  run 2026-06-17
 Provider : mock
 Universe : explicit (3 tickers)
 Source   : explicit --tickers
@@ -165,7 +165,7 @@ analyst estimates). It is **not required** for any default workflow. To use it:
 
 ```bash
 export FMP_API_KEY=your_key_here     # never commit this
-python -m qqq_screen.cli --provider fmp --tickers MSFT,GOOGL,CRWD
+python -m etf_screen.cli --provider fmp --tickers MSFT,GOOGL,CRWD
 ```
 
 FMP fundamentals require a **Starter/Premium** plan. On a free key the statement
@@ -202,7 +202,7 @@ to populate the table.
 ```bash
 pytest -q          # 29 tests: acceptance fixtures, edge cases, data layer,
                    # basis consistency, SBC-assumed-0, overrides, export
-flake8 qqq_screen tests
+flake8 etf_screen tests
 ```
 
 The acceptance fixtures in `tests/test_screen.py` lock in the validated

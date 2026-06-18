@@ -4,14 +4,14 @@ overrides, and the export writer."""
 import pandas as pd
 import pytest
 
-from qqq_screen.export import Provenance, build_rows, export
-from qqq_screen.overrides import (
+from etf_screen.export import Provenance, build_rows, export
+from etf_screen.overrides import (
     apply_override,
     company_from_override,
     load_overrides,
 )
-from qqq_screen.providers import DataUnavailable, _extract_yf
-from qqq_screen.screen import Company, evaluate
+from etf_screen.providers import DataUnavailable, _extract_yf
+from etf_screen.screen import Company, evaluate
 
 
 # --- helpers to build Yahoo-shaped DataFrames -------------------------------

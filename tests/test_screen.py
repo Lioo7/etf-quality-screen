@@ -9,7 +9,7 @@ import math
 
 import pytest
 
-from qqq_screen.screen import Company, evaluate, rank
+from etf_screen.screen import Company, evaluate, rank
 
 
 def make(ticker, rev, prior, ocf, capex, sbc, shares_now, shares_prior,

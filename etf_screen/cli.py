@@ -1,4 +1,4 @@
-"""Command-line entrypoint: ``python -m qqq_screen.cli``.
+"""Command-line entrypoint: ``python -m etf_screen.cli``.
 
 Resolves a universe (or an explicit ticker list), fetches fundamentals through
 the chosen provider (with optional manual overrides), runs the screen, and prints
@@ -36,7 +36,7 @@ class Skipped:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="python -m qqq_screen.cli",
+        prog="python -m etf_screen.cli",
         description="Quality-growth screener for ETF constituents.",
     )
     p.add_argument("--provider", choices=sorted(PROVIDERS), default="yfinance",
@@ -58,7 +58,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--export", choices=("csv", "md"), default=None,
                    help="also write the full result set to a file")
     p.add_argument("--out", default=None,
-                   help="export path (default: qqq_screen_<universe>_<date>.<ext>)")
+                   help="export path (default: etf_screen_<universe>_<date>.<ext>)")
     return p
 
 
@@ -139,7 +139,7 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names) -> Non
 
     # --- provenance header ---
     print("=" * 78)
-    print(f"qqq-quality-screen v{__version__}  |  run {date.today().isoformat()}")
+    print(f"etf-quality-screen v{__version__}  |  run {date.today().isoformat()}")
     print(f"Provider : {args.provider}")
     print(f"Universe : {args.universe if not args.tickers else 'explicit'} "
           f"({len(tickers)} tickers)")

@@ -10,15 +10,15 @@ A virtualenv lives at `.venv` (git-ignored). Use it directly:
 .venv/bin/pip install -r requirements.txt   # full deps (yfinance pulls pandas; lxml added explicitly)
 .venv/bin/python -m pytest -q                # run all tests
 .venv/bin/python -m pytest tests/test_screen.py::test_pricey_but_profitable_is_rejected  # single test
-.venv/bin/python -m flake8 qqq_screen tests  # lint (config in setup.cfg: max-line-length=100)
+.venv/bin/python -m flake8 etf_screen tests  # lint (config in setup.cfg: max-line-length=100)
 ```
 
 Run the screener:
 
 ```bash
-.venv/bin/python -m qqq_screen.cli --provider mock --tickers MSFT,GOOGL,CRWD   # offline, deterministic
-.venv/bin/python -m qqq_screen.cli --universe qqq --throttle 0.5               # full live run (~100 yfinance calls)
-.venv/bin/python -m qqq_screen.cli --tickers MSFT,GOOGL,CRWD --export md       # with file export
+.venv/bin/python -m etf_screen.cli --provider mock --tickers MSFT,GOOGL,CRWD   # offline, deterministic
+.venv/bin/python -m etf_screen.cli --universe qqq --throttle 0.5               # full live run (~100 yfinance calls)
+.venv/bin/python -m etf_screen.cli --tickers MSFT,GOOGL,CRWD --export md       # with file export
 ```
 
 ## Architecture
