@@ -19,6 +19,7 @@ Run the screener:
 .venv/bin/python -m etf_screen.cli --provider mock --tickers MSFT,GOOGL,CRWD   # offline, deterministic
 .venv/bin/python -m etf_screen.cli --universe qqq --throttle 0.5               # full live run (~100 yfinance calls)
 .venv/bin/python -m etf_screen.cli --tickers MSFT,GOOGL,CRWD --export md       # with file export
+.venv/bin/python -m etf_screen.cli --holdings path/to/ARKK.csv --sector-context  # any ETF via issuer CSV
 ```
 
 ## Architecture
@@ -27,9 +28,9 @@ A CLI stock screener whose central design rule is **strict separation of screeni
 
 **Data flow:** `cli.run()` → `constituents.resolve(etf)` (or `--tickers`) → for each ticker `provider.fetch()` → optional `overrides.apply_override()` → `screen.evaluate()` → `screen.rank()` → console report + optional `export`.
 
-- **`screen.py`** — pure logic, **no network/IO**. `Company` (raw statement-line inputs, all metrics derived from these — never pre-packaged ratios), `evaluate() -> Result`, `rank()`. This is the authoritative implementation of the four filters (Rule of 40, PEG≤2, P/S guardrail, SBC≤15%) and two tracks.
+- **`screen.py`** — pure logic, **no network/IO**. `Company` (raw statement-line inputs, all metrics derived from these — never pre-packaged ratios), `evaluate() -> Result`, `rank()`. This is the authoritative implementation of the four filters (Rule of 40, PEG≤2, P/S guardrail, SBC≤15%) and two tracks. Also holds the **informational** sector-context layer (`sector_medians()`, `annotate_sector_context()`) — see invariants.
 - **`providers.py`** — the only place that touches the network. `DataProvider` ABC with `YFinanceProvider` (default, key-less), `FMPProvider` (optional, needs paid tier + `FMP_API_KEY`), `MockProvider` (tests/offline). Providers **raise `DataUnavailable`** rather than fabricate. `_extract_yf()` is factored out as a pure function (takes DataFrames + info dict) so basis-selection logic is testable without network.
-- **`constituents.py`** — key-less ETF→tickers resolution. Wikipedia index table (primary, returns a ticker→name map) → bundled dated static list (fallback, prints a STALE warning). Keyed by ETF ticker (QQQ, SPY).
+- **`constituents.py`** — key-less ETF→tickers resolution. Wikipedia index table (primary, returns a ticker→name map) → bundled dated static list (fallback, prints a STALE warning). Keyed by ETF ticker (QQQ, SPY). Also `holdings_from_csv()` (the `--holdings` flag): a generic issuer-holdings-CSV loader (ARK/iShares/SSGA/…) that finds the ticker column by name, tolerates preamble/footer rows, and reuses `_looks_like_ticker` to drop junk — lets the tool screen *any* ETF.
 - **`overrides.py`** — git-ignored `overrides.json` (ticker→verified field values) that takes precedence over the provider; can patch fields or rescue a fully-specified skipped name.
 - **`cache.py`** — per-day JSON disk cache under `.cache/<provider>/<date>/` making full runs resumable.
 - **`export.py`** — CSV/Markdown writers for the full result set with a provenance header.
@@ -40,6 +41,7 @@ A CLI stock screener whose central design rule is **strict separation of screeni
 - **Never fabricate data.** Missing/blocked values → skip the name and report it (the "could not source" section); never fill from memory or default silently. The one sanctioned exception: a missing SBC *line item* (when the cash-flow statement was retrieved) is treated as 0, flagged `sbc_assumed_zero`, and surfaced in a dedicated review section.
 - **One accounting basis per company (yfinance).** All metrics use TTM only when a full trailing year of *both* income and cash-flow quarters exists; otherwise revenue *and* OCF/capex/SBC all fall back to annual, so growth/FCF-margin/SBC%/Rule40 share one base. Basis is recorded on `Company.basis`.
 - A short or empty shortlist is an acceptable, expected result of a strict screen — **do not loosen thresholds to populate the table.**
+- **Sector context is informational only.** The per-sector medians and the `--sector-context` / `--rank sector-relative` views must **never** change `passed`, `track`, or which names survive — the four filters and two tracks stay the sole gates. `tests/test_sector.py` has a regression proving verdicts+rank are identical with and without the feature; never weaken it.
 
 ## Conventions
 

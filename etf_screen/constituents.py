@@ -17,10 +17,12 @@ index rebalances, so provenance matters.
 
 from __future__ import annotations
 
+import csv
 import io
 import sys
 from dataclasses import dataclass, field
 from datetime import date
+from pathlib import Path
 
 USER_AGENT = "etf-quality-screen/0.1 (https://github.com; research tool)"
 
@@ -140,6 +142,115 @@ def _from_static(etf: str) -> Holdings:
         file=sys.stderr,
     )
     return Holdings(etf, list(tickers), "bundled static list", _STATIC_AS_OF, True)
+
+
+# Candidate column names across common issuer holdings exports (ARK, iShares,
+# SSGA/SPDR, Vanguard, Invesco). Matched case-insensitively; first hit wins.
+_CSV_TICKER_COLS = ("ticker", "symbol", "ticker symbol", "holding ticker", "identifier")
+_CSV_NAME_COLS = ("company", "name", "security", "issuer name", "holding",
+                  "description", "security name")
+_CSV_DATE_COLS = ("date", "as of", "as of date")
+_CSV_FUND_COLS = ("fund", "fund name", "fund ticker")
+
+
+def holdings_from_csv(path: str | Path) -> Holdings:
+    """Resolve an ETF's constituents from an *already downloaded* issuer holdings CSV.
+
+    Issuer holdings files (ARK, iShares, SSGA, Vanguard, ...) are the most
+    authoritative constituent source, which is why this exists alongside the
+    Wikipedia and static paths — it lets the tool screen *any* ETF, not just the
+    ones with a curated index table. It is deliberately generic: no network, no
+    per-issuer schema. A ticker column is located by name (tolerating preamble
+    rows above the header), and anything that isn't a ticker — blank rows, footer
+    disclaimers, cash/derivative lines — is discarded via the same
+    :func:`_looks_like_ticker` guard the rest of the module uses. Provenance
+    (``as_of``, fund name) is read from the file's own columns when present.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise ValueError(f"holdings CSV not found: {p}")
+    with p.open(newline="", encoding="utf-8-sig") as fh:
+        rows = [row for row in csv.reader(fh) if row]
+
+    header_idx, header = _find_header(rows)
+    if header_idx is None:
+        raise ValueError(
+            f"{p.name}: no ticker column found (looked for any of {list(_CSV_TICKER_COLS)})"
+        )
+    t_i = _pick_col(header, _CSV_TICKER_COLS)
+    n_i = _pick_col(header, _CSV_NAME_COLS)
+    d_i = _pick_col(header, _CSV_DATE_COLS)
+    f_i = _pick_col(header, _CSV_FUND_COLS)
+
+    tickers: list[str] = []
+    names: dict[str, str] = {}
+    seen: set[str] = set()
+    as_of: str | None = None
+    fund: str | None = None
+    for row in rows[header_idx + 1:]:
+        sym = _cell(row, t_i).upper()
+        if not _looks_like_ticker(sym):
+            continue
+        norm = _normalize(sym)
+        if norm in seen:  # an ETF can list the same name twice (e.g. share classes)
+            continue
+        seen.add(norm)
+        tickers.append(norm)
+        name = _cell(row, n_i)
+        if name:
+            names[norm] = name
+        if as_of is None:
+            as_of = _parse_csv_date(_cell(row, d_i))
+        if fund is None:
+            fund = _cell(row, f_i) or None
+
+    if not tickers:
+        raise ValueError(f"{p.name}: header found but no valid tickers in the file")
+
+    etf = (fund or p.stem).upper()
+    return Holdings(
+        etf=etf, tickers=tickers, source=f"holdings CSV: {p.name}",
+        as_of=as_of or date.today().isoformat(), is_stale=False, names=names,
+    )
+
+
+def _find_header(rows: list[list[str]]) -> tuple[int | None, list[str]]:
+    """Locate the header row; issuer files often carry preamble lines above it."""
+    for i, row in enumerate(rows):
+        if _pick_col(row, _CSV_TICKER_COLS) is not None:
+            return i, row
+    return None, []
+
+
+def _pick_col(header: list[str], candidates: tuple[str, ...]) -> int | None:
+    """Index of the first header cell matching a candidate name (case-insensitive)."""
+    lowered = [c.strip().lower() for c in header]
+    for cand in candidates:
+        if cand in lowered:
+            return lowered.index(cand)
+    return None
+
+
+def _cell(row: list[str], idx: int | None) -> str:
+    """Safe, trimmed cell access; '' when the column is absent or the row is short."""
+    if idx is None or idx >= len(row):
+        return ""
+    return row[idx].strip()
+
+
+def _parse_csv_date(raw: str) -> str | None:
+    """Best-effort ISO date from a holdings-file date cell, else the raw string."""
+    raw = raw.strip()
+    if not raw:
+        return None
+    from datetime import datetime
+
+    for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%b %d, %Y", "%B %d, %Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(raw, fmt).date().isoformat()
+        except ValueError:
+            continue
+    return raw
 
 
 def _looks_like_ticker(s: str) -> bool:

@@ -22,7 +22,7 @@ from tabulate import tabulate
 
 from . import __version__, export as export_mod
 from .cache import DiskCache
-from .constituents import resolve
+from .constituents import holdings_from_csv, resolve
 from .overrides import apply_override, company_from_override, load_overrides
 from .providers import PROVIDERS, DataProvider, DataUnavailable
 from .screen import Result, annotate_sector_context, evaluate, rank
@@ -43,6 +43,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="data source (default: yfinance, no API key needed)")
     p.add_argument("--universe", default="qqq",
                    help="ETF whose holdings to screen, e.g. qqq or spy (default: qqq)")
+    p.add_argument("--holdings", default=None,
+                   help="path to an issuer holdings CSV (any ETF: ARK, iShares, "
+                        "SSGA, ...); overrides --universe")
     p.add_argument("--tickers",
                    help="comma-separated tickers to screen instead of a universe")
     p.add_argument("--limit", type=int, default=None,
@@ -68,13 +71,19 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _resolve_universe(args) -> tuple[list[str], str, str, bool, dict[str, str]]:
-    """Return (tickers, source, as_of, is_stale, names) for the universe."""
+def _resolve_universe(args) -> tuple[list[str], str, str, bool, dict[str, str], str]:
+    """Return (tickers, source, as_of, is_stale, names, label) for the universe.
+
+    Precedence: explicit ``--tickers`` > a ``--holdings`` CSV > a named ``--universe``.
+    """
     if args.tickers:
         tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-        return tickers, "explicit --tickers", date.today().isoformat(), False, {}
+        return tickers, "explicit --tickers", date.today().isoformat(), False, {}, "tickers"
+    if args.holdings:
+        h = holdings_from_csv(args.holdings)
+        return h.tickers, h.source, h.as_of, h.is_stale, h.names, h.etf.lower()
     h = resolve(args.universe)
-    return h.tickers, h.source, h.as_of, h.is_stale, h.names
+    return h.tickers, h.source, h.as_of, h.is_stale, h.names, args.universe
 
 
 def _make_provider(args) -> DataProvider:
@@ -106,7 +115,11 @@ def _screen_one(provider, ticker, override) -> Result | Skipped:
 
 
 def run(args) -> int:
-    tickers, source, as_of, stale, names = _resolve_universe(args)
+    try:
+        tickers, source, as_of, stale, names, label = _resolve_universe(args)
+    except (ValueError, FileNotFoundError) as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
     if args.limit is not None:
         tickers = tickers[: args.limit]
     provider = _make_provider(args)
@@ -123,15 +136,16 @@ def run(args) -> int:
     # Informational only — attaches sector context; never alters any verdict.
     sector_stats = annotate_sector_context(results)
 
-    _report(args, source, as_of, stale, tickers, results, skipped, names, sector_stats)
+    _report(args, source, as_of, stale, tickers, results, skipped, names,
+            sector_stats, label)
 
     if args.export:
-        _do_export(args, source, as_of, results, skipped, names)
+        _do_export(args, source, as_of, results, skipped, names, label)
     return 0
 
 
-def _do_export(args, source, as_of, results, skipped, names) -> None:
-    universe = args.universe if not args.tickers else "tickers"
+def _do_export(args, source, as_of, results, skipped, names, label) -> None:
+    universe = label
     run_date = date.today().isoformat()
     path = Path(args.out) if args.out else Path(
         export_mod.default_filename(universe, run_date, args.export))
@@ -142,7 +156,7 @@ def _do_export(args, source, as_of, results, skipped, names) -> None:
 
 
 def _report(args, source, as_of, stale, tickers, results, skipped, names,
-            sector_stats) -> None:
+            sector_stats, label) -> None:
     survivors = rank(results, mode=args.rank)
     rejected = [r for r in results if not r.passed]
     sbc_assumed = [r for r in results if r.sbc_assumed_zero]
@@ -151,7 +165,7 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
     print("=" * 78)
     print(f"etf-quality-screen v{__version__}  |  run {date.today().isoformat()}")
     print(f"Provider : {args.provider}")
-    print(f"Universe : {args.universe if not args.tickers else 'explicit'} "
+    print(f"Universe : {'explicit' if args.tickers else label} "
           f"({len(tickers)} tickers)")
     print(f"Source   : {source}{'  [STALE]' if stale else ''}")
     print(f"As-of    : {as_of}")
