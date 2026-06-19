@@ -80,7 +80,30 @@ python -m etf_screen.cli --universe spy --throttle 1 --limit 50
 
 Flags: `--provider {yfinance,fmp,mock}` · `--universe <etf>` · `--tickers a,b,c`
 · `--limit N` · `--refresh` (ignore cache) · `--no-cache` · `--throttle SECONDS`
-· `--overrides PATH` · `--export {csv,md}` · `--out PATH`.
+· `--overrides PATH` · `--export {csv,md}` · `--out PATH` · `--sector-context`
+· `--rank {rule40,sector-relative}`.
+
+### Sector context (informational)
+
+Absolute thresholds compare every name to the same yardstick, but a P/S that is
+cheap for software is expensive for a utility. To read a name *relative to its
+peers*, the screen annotates each result with its **sector median** for the key
+metrics and adds a **Sector** column to the table and export.
+
+- `--sector-context` prints a verbose "compare like-with-like" view — each
+  survivor's `P/S`, `PEG`, and `Rule of 40` next to its sector median — plus a
+  per-sector summary (`#names`, median Rule40 / P/S / PEG).
+- A sector median is only computed when the run has **≥ 5 evaluable peers** in
+  that sector; smaller sectors (and `Unknown`-sector names) are marked *"too few
+  peers"* rather than guessed. Small universes (e.g. ARKK) will show many such
+  sectors — that is expected, not a bug.
+- `--rank sector-relative` re-orders the survivor list by within-sector
+  attractiveness (Rule of 40 above its sector median, P/S below it).
+
+> Sector context is **informational only**. It never changes a pass/fail
+> verdict, track routing, or which names survive — the four filters and two
+> tracks remain the sole gates. A regression test proves verdicts are identical
+> with and without it.
 
 ### Exporting
 
@@ -136,9 +159,9 @@ Phase-1 elimination counts
 
 Shortlist (1 names) — ranked by Rule of 40
 
-  #  Ticker    Company                   Track     Growth%  AdjFCF%  Rule40   P/S  Dil%  SBC%  PEG
----  --------  ------------------------  -------  --------  -------  ------  ----  ----  ----  ----
-  1  CRWD      CrowdStrike Holdings,…    Track B      45.8     13.7    59.5  22.9   4.3  14.3  N/A
+  #  Ticker  Company                   Sector      Track    Growth%  AdjFCF%  Rule40   P/S  Dil%  SBC%  PEG
+---  ------  ------------------------  ----------  -------  -------  -------  ------  ----  ----  ----  ----
+  1  CRWD    CrowdStrike Holdings, I…  Technology  Track B     45.8     13.7    59.5  22.9   4.3  14.3  N/A
 
 Why survivors passed:
   CRWD (CrowdStrike Holdings,…): Track B (Rule40 59.5, P/S 22.9 vs guardrail 22.9, SBC 14.3%)
@@ -209,11 +232,61 @@ guarantee the underlying data is correct. As noted up top, this is an educationa
 screening tool, **not investment advice**; verify independently before acting on
 any output.
 
+## Using the tool well (and its limits)
+
+**What it is.** A GARP / quality-growth **first-pass filter** — a way to narrow a
+universe down to a handful of names that *warrant a closer look*. It is **not** a
+strategy, a backtest, or a buy list. Surviving the screen is the start of the
+work, not the end of it.
+
+**A workflow that respects that:**
+
+1. **Screen** a universe (QQQ, SPY, a ticker list) down to a shortlist.
+2. **Do the fundamental due diligence** on each survivor. Is the growth durable
+   or cyclical? Is there a real moat? Is a high Rule of 40 a one-off — a biotech
+   milestone payment, a one-time licensing deal, a pull-forward — or a repeatable
+   engine? The screen sees one trailing window; you have to supply the narrative.
+3. **Read the trust flags.** The "could not source", "SBC assumed 0", `annual`
+   basis, and `low-confidence` annotations tell you how much to trust each row.
+   A pass built on assumed-zero SBC or an annual-basis fallback is a softer pass.
+4. **Use the sector context** to compare like-with-like (see above) — a
+   capital-intensive name that looks expensive on an absolute P/S may be cheap
+   for its sector, and vice-versa.
+5. **Diversify.** The output skews toward high-beta growth; a shortlist is not a
+   portfolio. Don't mistake five names that all pass the same growth filter for
+   five independent bets.
+6. **Size by risk, demand margin of safety.** The higher the multiple, the more
+   has to go right and the more a position should be sized for being wrong.
+7. **Accept the misses.** A disciplined screen will exclude some big winners —
+   the hyper-grower at a nosebleed P/E, the turnaround that hasn't shown up in
+   the trailing numbers yet. That is the *cost* of the discipline, not a flaw to
+   tune away by loosening thresholds.
+
+**Known biases and limits — know what the screen is structurally bad at:**
+
+- **It favors asset-light, high-margin businesses.** Software and similar models
+  clear the Rule-of-40 / FCF-margin bars easily; **capital-intensive** sectors
+  (semis, utilities, industrials) are penalized because heavy capex compresses
+  free cash flow. That is a real bias, not a verdict on business quality — the
+  sector context exists partly to make it legible.
+- **PEG is weak on the free provider.** Forward EPS growth from yfinance is a
+  rough proxy (always flagged `low-confidence`), so the PEG filter and Track A/B
+  split are softer than they look on the default provider.
+- **The value/quality premium is regime-dependent.** It has gone through long
+  droughts. A screen like this is better understood as *managing downside and
+  avoiding overpaying* than as a guarantee of outperformance — it tilts the odds,
+  it does not promise a result.
+
+**Not investment advice.** Data may be stale or inaccurate; the methodology is
+opinionated and incomplete by design. Verify every figure independently and
+consult a qualified professional before any financial decision.
+
 ## Development
 
 ```bash
-pytest -q          # 29 tests: acceptance fixtures, edge cases, data layer,
-                   # basis consistency, SBC-assumed-0, overrides, export
+pytest -q          # 39 tests: acceptance fixtures, edge cases, data layer,
+                   # basis consistency, SBC-assumed-0, overrides, export,
+                   # sector context (incl. the verdicts-unchanged regression)
 flake8 etf_screen tests
 ```
 
