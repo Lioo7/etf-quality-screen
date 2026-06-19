@@ -18,7 +18,7 @@ Screening logic and data sourcing are kept strictly separate:
 | --- | --- | --- |
 | `etf_screen/screen.py` | `Company`, `evaluate()`, ranking | No |
 | `etf_screen/providers.py` | `DataProvider` ABC + yfinance / FMP / Mock | Yes |
-| `etf_screen/constituents.py` | resolve ETF holdings → tickers | Yes |
+| `etf_screen/constituents.py` | resolve ETF holdings → tickers (Wikipedia, static, or issuer CSV) | Yes |
 | `etf_screen/cache.py` | per-day disk cache | No |
 | `etf_screen/cli.py` | argparse entrypoint + reporting | — |
 
@@ -82,10 +82,10 @@ python -m etf_screen.cli --provider mock --tickers MSFT,GOOGL,CRWD
 python -m etf_screen.cli --universe spy --throttle 1 --limit 50
 ```
 
-Flags: `--provider {yfinance,fmp,mock}` · `--universe <etf>` · `--tickers a,b,c`
-· `--limit N` · `--refresh` (ignore cache) · `--no-cache` · `--throttle SECONDS`
-· `--overrides PATH` · `--export {csv,md}` · `--out PATH` · `--sector-context`
-· `--rank {rule40,sector-relative}`.
+Flags: `--provider {yfinance,fmp,mock}` · `--universe <etf>` · `--holdings PATH`
+· `--tickers a,b,c` · `--limit N` · `--refresh` (ignore cache) · `--no-cache`
+· `--throttle SECONDS` · `--overrides PATH` · `--export {csv,md}` · `--out PATH`
+· `--sector-context` · `--rank {rule40,sector-relative}`.
 
 ### Sector context (informational)
 
@@ -171,6 +171,23 @@ Why survivors passed:
   CRWD (CrowdStrike Holdings,…): Track B (Rule40 59.5, P/S 22.9 vs guardrail 22.9, SBC 14.3%)
 ```
 
+## Example runs
+
+Two real runs are checked in under [`examples/`](examples/):
+
+- **[QQQ (Nasdaq-100)](examples/qqq-2026-06-19.md)** — the flagship full-universe
+  run: 8 survivors from 100 evaluated, with dense sector context (most sectors
+  clear the 5-peer bar).
+- **[ARKK (ARK Innovation ETF)](examples/arkk-2026-06-19.md)** — resolved from
+  ARK's official holdings CSV via `--holdings`; a small, concentrated universe
+  that shows the sparse-sector case and many hyper-growth names correctly barred
+  from Track B by its quality gate. The basket snapshot is committed alongside as
+  [`examples/arkk-holdings.csv`](examples/arkk-holdings.csv).
+
+Each doc carries a provenance header, the ranked shortlist, the sector-context
+view, and the full result set (collapsed). They are point-in-time snapshots —
+the header records exactly which data produced them.
+
 ## Data providers
 
 ### yfinance (default, free, no key)
@@ -221,8 +238,31 @@ Canned data for offline runs and the test suite.
    `STALE / as-of` warning. The index rebalances, so provenance is always shown.
 
 The issuer's official holdings file (Invesco / SSGA) is the most authoritative
-source, but its download endpoints are brittle and undocumented, so it is
-deliberately not a hard dependency.
+source, but its download *endpoints* are brittle and undocumented, so they are
+deliberately not a hard dependency. Instead, you can hand the tool a file you
+downloaded yourself — see below.
+
+### Screen any ETF from its holdings CSV
+
+Built-in universes cover QQQ and SPY. For **any other ETF** — including actively
+managed funds with no clean index table, like ARKK — download the issuer's
+holdings CSV (ARK, iShares, SSGA/SPDR, Vanguard, Invesco all publish one) and
+point `--holdings` at it:
+
+```bash
+python -m etf_screen.cli --holdings ~/Downloads/ARK_INNOVATION_ETF_ARKK_HOLDINGS.csv \
+    --sector-context --export md
+```
+
+The loader is generic: it finds the ticker column by name (tolerating preamble
+rows above the header) and discards anything that isn't a ticker — blank rows,
+footer disclaimers, cash and derivative lines. Provenance (`as-of` date, fund
+name) is read from the file's own columns when present, so the run is properly
+dated. No network, no API key, no per-issuer configuration. Precedence is
+`--tickers` > `--holdings` > `--universe`.
+
+> Holdings files are point-in-time snapshots and (for active funds) change often
+> — the export header records exactly which file and as-of date produced a run.
 
 ## Integrity
 
@@ -288,9 +328,10 @@ consult a qualified professional before any financial decision.
 ## Development
 
 ```bash
-pytest -q          # 39 tests: acceptance fixtures, edge cases, data layer,
+pytest -q          # 44 tests: acceptance fixtures, edge cases, data layer,
                    # basis consistency, SBC-assumed-0, overrides, export,
-                   # sector context (incl. the verdicts-unchanged regression)
+                   # sector context (incl. the verdicts-unchanged regression),
+                   # and the issuer-holdings-CSV loader
 flake8 etf_screen tests
 ```
 
