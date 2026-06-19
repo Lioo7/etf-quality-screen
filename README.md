@@ -24,6 +24,10 @@ Screening logic and data sourcing are kept strictly separate:
 
 ## Methodology
 
+![ETF Quality-Growth Screening Architecture: data inputs and derivation, the
+four absolute quality gates, and the two-track routing with a valuation-trap
+firewall.](docs/architecture.png)
+
 All metrics are computed from **raw statement lines** — never pre-packaged
 ratios.
 

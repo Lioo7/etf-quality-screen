@@ -7,3 +7,6 @@ cache/
 overrides.json
 etf_screen_*.csv
 etf_screen_*.md
+
+# Generated screen outputs (regenerable, point-in-time; keep local)
+results/
