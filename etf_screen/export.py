@@ -19,8 +19,9 @@ from .screen import Result
 
 # Column order shared by both formats.
 COLUMNS = [
-    "ticker", "name", "track", "passed", "growth_pct", "adj_fcf_margin_pct",
-    "rule40", "p_s", "ps_guardrail", "dilution_pct", "sbc_pct", "peg",
+    "ticker", "name", "sector", "track", "passed", "growth_pct",
+    "adj_fcf_margin_pct", "rule40", "p_s", "ps_guardrail", "dilution_pct",
+    "sbc_pct", "peg", "sector_med_rule40", "sector_med_ps", "sector_med_peg",
     "basis", "sbc_assumed_zero", "manual_override", "reason", "low_confidence",
 ]
 
@@ -47,14 +48,24 @@ def _num(x, nd: int = 2) -> str:
         return str(x)
 
 
+def _sector_med(r: Result, metric: str) -> str:
+    """The result's sector median for ``metric`` (blank when no context)."""
+    ctx = r.sector_context
+    if ctx is None or not ctx.available or metric not in ctx.medians:
+        return "N/A"
+    return _num(ctx.medians[metric])
+
+
 def _result_row(r: Result) -> dict:
     return {
-        "ticker": r.ticker, "name": r.name, "track": r.track,
+        "ticker": r.ticker, "name": r.name, "sector": r.sector, "track": r.track,
         "passed": r.passed, "growth_pct": _num(r.growth),
         "adj_fcf_margin_pct": _num(r.adj_margin), "rule40": _num(r.rule40),
         "p_s": _num(r.p_s), "ps_guardrail": _num(r.ps_guardrail),
         "dilution_pct": _num(r.dilution), "sbc_pct": _num(r.sbc_pct),
-        "peg": _num(r.peg), "basis": r.basis,
+        "peg": _num(r.peg), "sector_med_rule40": _sector_med(r, "rule40"),
+        "sector_med_ps": _sector_med(r, "p_s"), "sector_med_peg": _sector_med(r, "peg"),
+        "basis": r.basis,
         "sbc_assumed_zero": r.sbc_assumed_zero, "manual_override": r.manual_override,
         "reason": "; ".join(r.reasons), "low_confidence": "; ".join(r.company.low_confidence),
     }

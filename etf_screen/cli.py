@@ -25,7 +25,7 @@ from .cache import DiskCache
 from .constituents import resolve
 from .overrides import apply_override, company_from_override, load_overrides
 from .providers import PROVIDERS, DataProvider, DataUnavailable
-from .screen import Result, evaluate, rank
+from .screen import Result, annotate_sector_context, evaluate, rank
 
 
 @dataclass
@@ -59,6 +59,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="also write the full result set to a file")
     p.add_argument("--out", default=None,
                    help="export path (default: etf_screen_<universe>_<date>.<ext>)")
+    p.add_argument("--sector-context", action="store_true",
+                   help="show the verbose sector-context view (informational; the "
+                        "Sector column and export fields are always present)")
+    p.add_argument("--rank", choices=("rule40", "sector-relative"), default="rule40",
+                   help="survivor ordering: absolute Rule of 40 (default) or "
+                        "within-sector attractiveness (informational re-sort only)")
     return p
 
 
@@ -114,7 +120,10 @@ def run(args) -> int:
         if args.throttle and i < len(tickers) - 1:
             time.sleep(args.throttle)
 
-    _report(args, source, as_of, stale, tickers, results, skipped, names)
+    # Informational only — attaches sector context; never alters any verdict.
+    sector_stats = annotate_sector_context(results)
+
+    _report(args, source, as_of, stale, tickers, results, skipped, names, sector_stats)
 
     if args.export:
         _do_export(args, source, as_of, results, skipped, names)
@@ -132,8 +141,9 @@ def _do_export(args, source, as_of, results, skipped, names) -> None:
     print(f"\nExported {len(rows)} rows to {path}")
 
 
-def _report(args, source, as_of, stale, tickers, results, skipped, names) -> None:
-    survivors = rank(results)
+def _report(args, source, as_of, stale, tickers, results, skipped, names,
+            sector_stats) -> None:
+    survivors = rank(results, mode=args.rank)
     rejected = [r for r in results if not r.passed]
     sbc_assumed = [r for r in results if r.sbc_assumed_zero]
 
@@ -162,17 +172,24 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names) -> Non
     print(f"    PEG (Track A) : {sum(1 for r in rejected if r.peg is not None and not r.pass_peg)}")
 
     # --- ranked survivor table ---
-    print(f"\nShortlist ({len(survivors)} names) — ranked by Rule of 40\n")
+    rank_label = ("Rule of 40" if args.rank == "rule40"
+                  else "within-sector attractiveness")
+    print(f"\nShortlist ({len(survivors)} names) — ranked by {rank_label}\n")
     if survivors:
         rows = [[
-            i + 1, r.ticker, _short(r.name), r.track, _f(r.growth), _f(r.adj_margin),
-            _f(r.rule40), _f(r.p_s, 1), _f(r.dilution), _f(r.sbc_pct), _peg(r.peg),
+            i + 1, r.ticker, _short(r.name), _short(r.sector, 20), r.track,
+            _f(r.growth), _f(r.adj_margin), _f(r.rule40), _f(r.p_s, 1),
+            _f(r.dilution), _f(r.sbc_pct), _peg(r.peg),
         ] for i, r in enumerate(survivors)]
-        headers = ["#", "Ticker", "Company", "Track", "Growth%", "AdjFCF%",
-                   "Rule40", "P/S", "Dil%", "SBC%", "PEG"]
+        headers = ["#", "Ticker", "Company", "Sector", "Track", "Growth%",
+                   "AdjFCF%", "Rule40", "P/S", "Dil%", "SBC%", "PEG"]
         print(tabulate(rows, headers=headers, floatfmt=".1f"))
     else:
         print("  (empty — a strict screen producing no survivors is a valid result)")
+
+    # --- sector context (informational; gated behind --sector-context) ---
+    if args.sector_context:
+        _report_sector_context(survivors, results, sector_stats)
 
     # --- per-name reasoning ---
     if survivors:
@@ -202,6 +219,60 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names) -> Non
         print(f"\nCould not source ({len(skipped)}) — skipped, never fabricated:")
         for s in skipped:
             print(f"  {s.ticker} ({_short(names.get(s.ticker, s.ticker))}): {s.reason}")
+
+
+def _report_sector_context(survivors, results, sector_stats) -> None:
+    """Print the like-with-like sector view: survivors vs. their sector medians,
+    plus a per-sector summary. Purely informational — never a gate."""
+    print("\nSector context (informational — compares like-with-like; never gates "
+          "a verdict)")
+
+    if survivors:
+        print("\n  Survivors vs. their sector median:")
+        for r in survivors:
+            ctx = r.sector_context
+            if ctx and ctx.available:
+                print(f"    {r.ticker} ({_short(r.sector, 22)}): "
+                      f"{_vs(r.p_s, ctx, 'p_s', 'P/S', 1)}, "
+                      f"{_vs(r.peg, ctx, 'peg', 'PEG', 2)}, "
+                      f"{_vs(r.rule40, ctx, 'rule40', 'Rule40', 1)}")
+            else:
+                note = ctx.note if ctx else "n/a"
+                print(f"    {r.ticker} ({_short(r.sector, 22)}): {note}")
+
+    # Per-sector summary block (#names, median Rule40 / P/S / PEG).
+    if sector_stats:
+        print("\n  Per-sector medians (sectors with >= 5 evaluable peers):")
+        rows = []
+        for sec in sorted(sector_stats):
+            st = sector_stats[sec]
+            rows.append([_short(sec, 26), st.n, _med(st, "rule40"),
+                         _med(st, "p_s", 1), _med(st, "peg", 2)])
+        print(tabulate(rows, headers=["Sector", "#", "Rule40", "P/S", "PEG"],
+                       floatfmt=".1f", tablefmt="simple"))
+    else:
+        print("\n  Per-sector medians: none — no sector reached 5 evaluable peers.")
+
+    # Note sparse coverage (expected for small universes like ARKK).
+    sparse = sorted({r.sector for r in results
+                     if r.sector_context and not r.sector_context.available
+                     and r.sector != "Unknown"})
+    if sparse:
+        print(f"\n  Note: {len(sparse)} sector(s) had too few peers (<5) for a "
+              f"median — expected for small universes: {', '.join(sparse)}.")
+
+
+def _vs(value, ctx, metric, label, nd: int = 1) -> str:
+    """Render `Label V (sector med M)` for one metric against its sector median."""
+    med = ctx.medians.get(metric)
+    val = _peg(value) if metric == "peg" else _f(value, nd)
+    med_s = _peg(med) if metric == "peg" else _f(med, nd)
+    return f"{label} {val} (sector med {med_s})"
+
+
+def _med(st, metric: str, nd: int = 1) -> str:
+    med = st.medians.get(metric)
+    return "N/A" if med is None else f"{med:.{nd}f}"
 
 
 # --- small formatting helpers ---

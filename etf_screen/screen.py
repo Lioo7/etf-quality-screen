@@ -14,12 +14,18 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from math import isnan, nan
+from statistics import median
 
 # --- thresholds (the validated spec) ---------------------------------------
 RULE40_MIN = 40.0       # revenue growth% + adjusted FCF margin%
 PEG_MAX = 2.0           # Track A only
 SBC_MAX_PCT = 15.0      # SBC as % of revenue
 PS_GUARDRAIL_FACTOR = 0.5  # P/S must be <= factor * revenue growth%
+
+# --- sector context (INFORMATIONAL ONLY — never gates a verdict) -----------
+SECTOR_MIN_PEERS = 5    # don't compute a sector median below this many peers
+# Result attributes whose per-sector median we report (adj_fcf_margin == adj_margin).
+_SECTOR_METRICS = ("rule40", "p_s", "peg", "growth", "adj_margin", "sbc_pct")
 
 
 def pct(part: float, whole: float) -> float:
@@ -57,6 +63,8 @@ class Company:
     basis: str = ""             # accounting basis used: "TTM", "annual", or ""
     sbc_assumed_zero: bool = False  # SBC line absent from source -> assumed 0
     overridden_fields: list[str] = field(default_factory=list)  # from overrides.json
+    sector: str = "Unknown"     # GICS-style sector bucket from the data layer
+    industry: str = ""          # finer sub-sector (optional)
 
     def __post_init__(self) -> None:
         # Coerce Nones (e.g. from older cache entries) and default name to ticker.
@@ -108,9 +116,18 @@ class Result:
     reasons: list[str]       # rejection reasons (empty if passed)
     evaluable: bool          # False when a divide-by-zero guard tripped
 
+    # Informational sector annotation, attached post-hoc by
+    # :func:`annotate_sector_context`. NEVER read by :func:`evaluate` or the
+    # default ranking — it cannot change passed / track / rank.
+    sector_context: "SectorContext | None" = None
+
     @property
     def ticker(self) -> str:
         return self.company.ticker
+
+    @property
+    def sector(self) -> str:
+        return self.company.sector or "Unknown"
 
     @property
     def name(self) -> str:
@@ -227,10 +244,131 @@ def _rejection_reasons(
     return reasons or ["did not clear either track"]
 
 
-def rank(results: list[Result]) -> list[Result]:
-    """Rank survivors: Rule of 40 desc, then PEG asc (None last), then P/S headroom desc."""
-    def key(r: Result):
-        peg_sort = r.peg if r.peg is not None else float("inf")
-        return (-r.rule40, peg_sort, -r.ps_headroom)
+def rank(results: list[Result], mode: str = "rule40") -> list[Result]:
+    """Rank survivors.
 
-    return sorted([r for r in results if r.passed], key=key)
+    ``mode="rule40"`` (the default, absolute) preserves the validated ordering:
+    Rule of 40 desc, then PEG asc (None last), then P/S headroom desc.
+
+    ``mode="sector-relative"`` reorders the *same* survivor set by how attractive
+    each name is within its sector (Rule of 40 above its sector median and P/S
+    below it). This is a presentation choice only — it never changes which names
+    pass; survivors lacking sector context fall back to the absolute key and sort
+    last. Requires :func:`annotate_sector_context` to have run first.
+    """
+    survivors = [r for r in results if r.passed]
+    if mode == "sector-relative":
+        return sorted(survivors, key=_sector_relative_key)
+    return sorted(survivors, key=_rule40_key)
+
+
+def _rule40_key(r: Result):
+    peg_sort = r.peg if r.peg is not None else float("inf")
+    return (-r.rule40, peg_sort, -r.ps_headroom)
+
+
+def _sector_relative_key(r: Result):
+    """Sort key for sector-relative mode: better-than-sector names first.
+
+    Score rewards Rule of 40 above the sector median and P/S below it. Names
+    without usable sector medians sort after those that have them, and within
+    each group the absolute Rule-of-40 key breaks ties deterministically.
+    """
+    ctx = r.sector_context
+    meds = ctx.medians if (ctx and ctx.available) else {}
+    if meds.get("rule40") and meds.get("p_s") and r.p_s > 0:
+        r40_rel = r.rule40 / meds["rule40"]          # >1 = above sector median
+        ps_rel = meds["p_s"] / r.p_s                 # >1 = cheaper than sector
+        return (0, -(r40_rel + ps_rel)) + _rule40_key(r)
+    return (1, 0.0) + _rule40_key(r)
+
+
+@dataclass
+class SectorStats:
+    """Per-sector medians for one run (only built when peers >= SECTOR_MIN_PEERS)."""
+
+    sector: str
+    n: int                       # number of evaluable peers in this sector
+    medians: dict[str, float]    # metric name -> median (peg omitted if all N/A)
+
+
+@dataclass
+class SectorContext:
+    """Informational sector annotation attached to a single :class:`Result`."""
+
+    sector: str
+    peers: int                   # evaluable same-sector names in the run
+    available: bool              # True when sector medians were computed
+    note: str = ""               # reason when unavailable (e.g. too few peers)
+    medians: dict[str, float] = field(default_factory=dict)
+    deltas: dict[str, float] = field(default_factory=dict)  # value - sector median
+
+
+def _metric_value(r: Result, metric: str) -> float | None:
+    """A result's value for a sector metric, or None when N/A (PEG) or NaN."""
+    if metric == "peg":
+        return r.peg
+    v = getattr(r, metric)
+    return None if v is None or isnan(v) else v
+
+
+def _sector_groups(results: list[Result]) -> dict[str, list[Result]]:
+    """Group evaluable results by sector, excluding Unknown-sector names."""
+    groups: dict[str, list[Result]] = {}
+    for r in results:
+        if not r.evaluable:
+            continue
+        sec = r.company.sector or "Unknown"
+        if sec == "Unknown":
+            continue
+        groups.setdefault(sec, []).append(r)
+    return groups
+
+
+def sector_medians(results: list[Result]) -> dict[str, SectorStats]:
+    """Median of each key metric per sector, for sectors with enough peers.
+
+    Pure and network-free. A sector median is computed only when the sector has
+    at least :data:`SECTOR_MIN_PEERS` evaluable peers in the run; PEG medians
+    ignore N/A names; Unknown-sector names are excluded entirely. This is
+    descriptive context — it does not feed back into any verdict or gate.
+    """
+    out: dict[str, SectorStats] = {}
+    for sec, rs in _sector_groups(results).items():
+        if len(rs) < SECTOR_MIN_PEERS:
+            continue
+        meds: dict[str, float] = {}
+        for m in _SECTOR_METRICS:
+            vals = [v for r in rs if (v := _metric_value(r, m)) is not None]
+            if vals:
+                meds[m] = median(vals)
+        out[sec] = SectorStats(sec, len(rs), meds)
+    return out
+
+
+def annotate_sector_context(results: list[Result]) -> dict[str, SectorStats]:
+    """Attach a :class:`SectorContext` to every result; return the sector stats.
+
+    Mutates each result's ``sector_context`` only — it deliberately touches no
+    field that :func:`evaluate` or the default :func:`rank` read, so verdicts,
+    track routing, and absolute ranking are provably unchanged.
+    """
+    groups = _sector_groups(results)
+    stats = sector_medians(results)
+    for r in results:
+        sec = r.company.sector or "Unknown"
+        st = stats.get(sec)
+        if st is not None:
+            deltas = {
+                m: v - med
+                for m, med in st.medians.items()
+                if (v := _metric_value(r, m)) is not None
+            }
+            r.sector_context = SectorContext(
+                sec, st.n, True, "", st.medians, deltas)
+        elif sec == "Unknown":
+            r.sector_context = SectorContext(sec, 0, False, "n/a — sector unknown")
+        else:
+            r.sector_context = SectorContext(
+                sec, len(groups.get(sec, [])), False, "n/a — too few peers (<5)")
+    return stats

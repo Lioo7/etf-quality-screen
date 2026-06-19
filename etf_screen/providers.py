@@ -30,7 +30,7 @@ _COMPANY_FIELDS = (
     "ticker", "revenue_ttm", "revenue_ttm_prior", "ocf_ttm", "capex_ttm",
     "sbc_ttm", "diluted_shares_now", "diluted_shares_prior", "market_cap",
     "forward_pe", "forward_eps_growth", "low_confidence", "name", "basis",
-    "sbc_assumed_zero", "overridden_fields",
+    "sbc_assumed_zero", "overridden_fields", "sector", "industry",
 )
 
 
@@ -76,13 +76,17 @@ class MockProvider(DataProvider):
     DATA: dict[str, Company] = {
         "MSFT": Company("MSFT", 245000, 212000, 118000, 28000, 10000,
                         7430, 7450, 3100000, 32.0, 14.0,
-                        name="Microsoft Corporation", basis="TTM"),
+                        name="Microsoft Corporation", basis="TTM",
+                        sector="Technology", industry="Software—Infrastructure"),
         "GOOGL": Company("GOOGL", 328000, 283000, 110000, 32000, 22000,
                          12200, 12500, 2100000, 21.0, 16.0,
-                         name="Alphabet Inc.", basis="TTM"),
+                         name="Alphabet Inc.", basis="TTM",
+                         sector="Communication Services",
+                         industry="Internet Content & Information"),
         "CRWD": Company("CRWD", 3500, 2400, 1100, 120, 500, 245, 235,
                         80000, None, 30.0,
-                        name="CrowdStrike Holdings, Inc.", basis="TTM"),
+                        name="CrowdStrike Holdings, Inc.", basis="TTM",
+                        sector="Technology", industry="Software—Infrastructure"),
     }
 
     def _fetch_uncached(self, ticker: str) -> Company:
@@ -217,6 +221,12 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info) -> Company:
 
     name = info.get("shortName") or info.get("longName") or ticker
 
+    # Sector is informational context only; never guess it. Absent -> "Unknown".
+    sector = info.get("sector") or "Unknown"
+    industry = info.get("industry") or ""
+    if sector == "Unknown":
+        low_conf.append("sector not reported by source")
+
     return Company(
         ticker=ticker, revenue_ttm=revenue_ttm, revenue_ttm_prior=revenue_prior,
         ocf_ttm=ocf, capex_ttm=capex, sbc_ttm=sbc,
@@ -225,6 +235,7 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info) -> Company:
         forward_pe=float(forward_pe) if forward_pe else None,
         forward_eps_growth=forward_eps_growth, low_confidence=low_conf,
         name=name, basis=basis, sbc_assumed_zero=sbc_assumed_zero,
+        sector=sector, industry=industry,
     )
 
 
@@ -328,6 +339,18 @@ class FMPProvider(DataProvider):
         price, ttm_eps = quote.get("price"), quote.get("eps")
         name = quote.get("name") or ticker
 
+        # Sector/industry from the company profile (informational only).
+        sector, industry = "Unknown", ""
+        try:
+            profile = self._get(f"profile/{ticker}")
+            if profile:
+                sector = profile[0].get("sector") or "Unknown"
+                industry = profile[0].get("industry") or ""
+        except DataUnavailable:
+            pass  # profile is optional context; never block a name on it
+        if sector == "Unknown":
+            low_conf.append("sector not reported by source")
+
         forward_pe, forward_eps_growth = None, 0.0
         est = self._get(f"analyst-estimates/{ticker}", period="annual")
         fwd_eps = _nearest_future_eps(est)
@@ -343,6 +366,7 @@ class FMPProvider(DataProvider):
             market_cap=market_cap, forward_pe=forward_pe,
             forward_eps_growth=forward_eps_growth, low_confidence=low_conf,
             name=name, basis="TTM", sbc_assumed_zero=not sbc_found,
+            sector=sector, industry=industry,
         )
 
 
