@@ -21,7 +21,8 @@ from .screen import Result
 COLUMNS = [
     "ticker", "name", "sector", "track", "passed", "growth_pct",
     "adj_fcf_margin_pct", "rule40", "p_s", "ps_guardrail", "dilution_pct",
-    "sbc_pct", "peg", "sector_med_rule40", "sector_med_ps", "sector_med_peg",
+    "sbc_pct", "peg", "net_income_ttm",
+    "sector_med_rule40", "sector_med_ps", "sector_med_peg",
     "basis", "sbc_assumed_zero", "manual_override", "reason", "low_confidence",
 ]
 
@@ -63,7 +64,8 @@ def _result_row(r: Result) -> dict:
         "adj_fcf_margin_pct": _num(r.adj_margin), "rule40": _num(r.rule40),
         "p_s": _num(r.p_s), "ps_guardrail": _num(r.ps_guardrail),
         "dilution_pct": _num(r.dilution), "sbc_pct": _num(r.sbc_pct),
-        "peg": _num(r.peg), "sector_med_rule40": _sector_med(r, "rule40"),
+        "peg": _num(r.peg), "net_income_ttm": _num(r.company.net_income_ttm),
+        "sector_med_rule40": _sector_med(r, "rule40"),
         "sector_med_ps": _sector_med(r, "p_s"), "sector_med_peg": _sector_med(r, "peg"),
         "basis": r.basis,
         "sbc_assumed_zero": r.sbc_assumed_zero, "manual_override": r.manual_override,

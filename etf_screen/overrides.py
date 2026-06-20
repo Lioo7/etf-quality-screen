@@ -14,7 +14,8 @@ which case every required field must be present)::
         "name": "Foo Corp", "revenue_ttm": 5000, "revenue_ttm_prior": 4000,
         "ocf_ttm": 1400, "capex_ttm": 200, "sbc_ttm": 100,
         "diluted_shares_now": 800, "diluted_shares_prior": 790,
-        "market_cap": 60000, "forward_pe": 25, "forward_eps_growth": 20
+        "market_cap": 60000, "forward_pe": 25, "forward_eps_growth": 20,
+        "net_income_ttm": 900
       }
     }
 """
@@ -33,7 +34,7 @@ DEFAULT_PATH = "overrides.json"
 _OVERRIDABLE = {
     "name", "revenue_ttm", "revenue_ttm_prior", "ocf_ttm", "capex_ttm",
     "sbc_ttm", "diluted_shares_now", "diluted_shares_prior", "market_cap",
-    "forward_pe", "forward_eps_growth",
+    "forward_pe", "forward_eps_growth", "net_income_ttm",
 }
 # Fields that must all be present to construct a Company from scratch.
 _REQUIRED = _OVERRIDABLE - {"name", "forward_pe"}

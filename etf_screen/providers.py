@@ -29,7 +29,8 @@ from .screen import Company
 _COMPANY_FIELDS = (
     "ticker", "revenue_ttm", "revenue_ttm_prior", "ocf_ttm", "capex_ttm",
     "sbc_ttm", "diluted_shares_now", "diluted_shares_prior", "market_cap",
-    "forward_pe", "forward_eps_growth", "low_confidence", "name", "basis",
+    "forward_pe", "forward_eps_growth", "net_income_ttm",
+    "low_confidence", "name", "basis",
     "sbc_assumed_zero", "overridden_fields", "sector", "industry",
 )
 
@@ -75,16 +76,16 @@ class MockProvider(DataProvider):
     #: A tiny, hand-built universe mirroring the acceptance-test archetypes.
     DATA: dict[str, Company] = {
         "MSFT": Company("MSFT", 245000, 212000, 118000, 28000, 10000,
-                        7430, 7450, 3100000, 32.0, 14.0,
+                        7430, 7450, 3100000, 32.0, 14.0, 88000,
                         name="Microsoft Corporation", basis="TTM",
                         sector="Technology", industry="Software—Infrastructure"),
         "GOOGL": Company("GOOGL", 328000, 283000, 110000, 32000, 22000,
-                         12200, 12500, 2100000, 21.0, 16.0,
+                         12200, 12500, 2100000, 21.0, 16.0, 74000,
                          name="Alphabet Inc.", basis="TTM",
                          sector="Communication Services",
                          industry="Internet Content & Information"),
         "CRWD": Company("CRWD", 3500, 2400, 1100, 120, 500, 245, 235,
-                        80000, None, 30.0,
+                        80000, None, 30.0, -150,
                         name="CrowdStrike Holdings, Inc.", basis="TTM",
                         sector="Technology", industry="Software—Infrastructure"),
     }
@@ -145,6 +146,11 @@ _SHARES = ["Diluted Average Shares", "Diluted Shares", "Basic Average Shares"]
 _OCF = ["Operating Cash Flow", "Total Cash From Operating Activities"]
 _CAPEX = ["Capital Expenditure", "Capital Expenditures"]
 _SBC = ["Stock Based Compensation"]
+_NET_INCOME = [
+    "Net Income",
+    "Net Income Common Stockholders",
+    "Net Income From Continuing Operation Net Minority Interest",
+]
 
 
 def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info) -> Company:
@@ -207,6 +213,18 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info) -> Company:
     if sbc_assumed_zero:
         low_conf.append("SBC not reported by source - assumed 0")
 
+    # Net income gates routing -> source it on the SAME basis as revenue, and
+    # raise rather than default if Yahoo doesn't expose the line.
+    ni_vals = _row(q_inc if basis == "TTM" else a_inc, _NET_INCOME)
+    if basis == "TTM":
+        if len(ni_vals) < 4:
+            raise DataUnavailable(f"{ticker}: net income unavailable from yfinance")
+        net_income_ttm = sum(ni_vals[:4])
+    else:
+        if not ni_vals:
+            raise DataUnavailable(f"{ticker}: net income unavailable from yfinance")
+        net_income_ttm = ni_vals[0]
+
     market_cap = info.get("marketCap")
     if not market_cap:
         raise DataUnavailable(f"{ticker}: no market cap from yfinance")
@@ -233,7 +251,8 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info) -> Company:
         diluted_shares_now=shares_now, diluted_shares_prior=shares_prior,
         market_cap=float(market_cap),
         forward_pe=float(forward_pe) if forward_pe else None,
-        forward_eps_growth=forward_eps_growth, low_confidence=low_conf,
+        forward_eps_growth=forward_eps_growth, net_income_ttm=net_income_ttm,
+        low_confidence=low_conf,
         name=name, basis=basis, sbc_assumed_zero=sbc_assumed_zero,
         sector=sector, industry=industry,
     )
@@ -324,6 +343,9 @@ class FMPProvider(DataProvider):
         revenue_prior = sum(q["revenue"] for q in inc[4:8])
         shares_now = sum(q["weightedAverageShsOutDil"] for q in inc[:4])
         shares_prior = sum(q["weightedAverageShsOutDil"] for q in inc[4:8])
+        if any(q.get("netIncome") is None for q in inc[:4]):
+            raise DataUnavailable(f"{ticker}: net income unavailable from FMP")
+        net_income_ttm = sum(q["netIncome"] for q in inc[:4])
 
         ocf = sum(q["operatingCashFlow"] for q in cf[:4])
         capex = abs(sum(q["capitalExpenditure"] for q in cf[:4]))
@@ -364,7 +386,8 @@ class FMPProvider(DataProvider):
             ocf_ttm=ocf, capex_ttm=capex, sbc_ttm=sbc,
             diluted_shares_now=shares_now, diluted_shares_prior=shares_prior,
             market_cap=market_cap, forward_pe=forward_pe,
-            forward_eps_growth=forward_eps_growth, low_confidence=low_conf,
+            forward_eps_growth=forward_eps_growth, net_income_ttm=net_income_ttm,
+            low_confidence=low_conf,
             name=name, basis="TTM", sbc_assumed_zero=not sbc_found,
             sector=sector, industry=industry,
         )

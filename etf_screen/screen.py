@@ -5,9 +5,12 @@ function that applies the validated four-filter / two-track methodology, and
 helpers for ranking and rendering results.
 
 The thresholds and routing here are a *fixed, already-validated spec* — see the
-acceptance tests in ``tests/test_screen.py``. In particular, Track B is reachable
-**only** when PEG is genuinely N/A (a GAAP-unprofitable name with no forward
-P/E); a profitable name that fails the PEG filter must be rejected outright.
+acceptance tests in ``tests/test_screen.py``. Routing keys solely on trailing
+GAAP profitability (``net_income_ttm > 0``): a profitable name goes through
+Track A only (it must clear the PEG filter; if PEG is not computable it is
+rejected, never routed to Track B), while a GAAP-unprofitable name is eligible
+for the PEG-exempt Track B (subject to the quality gate). ``forward_pe`` is
+irrelevant to routing.
 """
 
 from __future__ import annotations
@@ -56,6 +59,7 @@ class Company:
     market_cap: float
     forward_pe: float | None    # None when GAAP-unprofitable / no estimate
     forward_eps_growth: float   # forward EPS growth, in %
+    net_income_ttm: float       # trailing net income (same basis) — gates routing
 
     # Optional provenance / confidence annotations from the data layer.
     low_confidence: list[str] = field(default_factory=list)
@@ -177,8 +181,15 @@ def evaluate(c: Company) -> Result:
         else None
     )
 
+    # Routing keys solely on trailing GAAP profitability.
+    gaap_profitable = c.net_income_ttm > 0
+
     # If any input that gates a filter is NaN, the name can't be evaluated.
-    evaluable = not any(isnan(x) for x in (growth, adj_margin, p_s, sbc_pct, dilution))
+    # net_income_ttm is included as belt-and-suspenders: a NaN here would slip
+    # through gaap_profitable as False, so guard it like the derived metrics.
+    evaluable = not any(
+        isnan(x) for x in (growth, adj_margin, p_s, sbc_pct, dilution, c.net_income_ttm)
+    )
 
     pass_sbc = sbc_pct <= SBC_MAX_PCT
     pass_rule40 = rule40 >= RULE40_MIN
@@ -186,10 +197,12 @@ def evaluate(c: Company) -> Result:
     pass_peg = peg is not None and peg <= PEG_MAX
     quality_gate = (adj_fcf > 0) and (dilution < growth)
 
-    track_a = pass_sbc and pass_rule40 and pass_ps and pass_peg
-    # CRITICAL: Track B only when PEG is genuinely N/A. A profitable name that
-    # fails PEG must NOT slip into Track B.
-    track_b = (peg is None) and pass_sbc and pass_rule40 and pass_ps and quality_gate
+    # CRITICAL: routing is gated on GAAP profitability, NOT on whether PEG is
+    # computable. A profitable name must clear PEG via Track A (and is barred
+    # from Track B even when PEG is N/A); only a GAAP-unprofitable name is
+    # eligible for the PEG-exempt Track B.
+    track_a = gaap_profitable and pass_sbc and pass_rule40 and pass_ps and pass_peg
+    track_b = (not gaap_profitable) and pass_sbc and pass_rule40 and pass_ps and quality_gate
 
     passed = evaluable and (track_a or track_b)
 
@@ -205,7 +218,7 @@ def evaluate(c: Company) -> Result:
     else:
         track = "—"
         reasons = _rejection_reasons(
-            pass_sbc, pass_rule40, pass_ps, pass_peg, quality_gate,
+            gaap_profitable, pass_sbc, pass_rule40, pass_ps, quality_gate,
             sbc_pct, rule40, p_s, growth, peg,
         )
 
@@ -221,11 +234,16 @@ def evaluate(c: Company) -> Result:
 
 
 def _rejection_reasons(
-    pass_sbc: bool, pass_rule40: bool, pass_ps: bool, pass_peg: bool,
+    gaap_profitable: bool, pass_sbc: bool, pass_rule40: bool, pass_ps: bool,
     quality_gate: bool, sbc_pct: float, rule40: float, p_s: float,
     growth: float, peg: float | None,
 ) -> list[str]:
-    """Build a human-readable list of why a name was rejected."""
+    """Build a human-readable list of why a name was rejected.
+
+    Branches on GAAP profitability — the routing key — not on whether PEG is
+    computable: a profitable name lives or dies on Track A (PEG required), an
+    unprofitable one on the Track B quality gate.
+    """
     reasons: list[str] = []
     if not pass_rule40:
         reasons.append(f"Rule of 40 = {rule40:.1f} (< {RULE40_MIN:.0f})")
@@ -235,12 +253,20 @@ def _rejection_reasons(
         )
     if not pass_sbc:
         reasons.append(f"SBC = {sbc_pct:.1f}% of revenue (> {SBC_MAX_PCT:.0f}%)")
-    if peg is None:
-        # PEG N/A -> Track A impossible; rejection then comes from quality gate.
-        if not quality_gate:
-            reasons.append("fails Track B quality gate (adj FCF<=0 or dilution>=growth)")
-    elif not pass_peg:
-        reasons.append(f"PEG = {peg:.1f} (> {PEG_MAX:.1f}); profitable, so Track B is barred")
+    if gaap_profitable:
+        # Profitable -> Track A only, so PEG must clear; Track B is barred.
+        if peg is None:
+            reasons.append(
+                "PEG not computable (no forward P/E or forward EPS growth <= 0); "
+                "profitable name must clear PEG, Track B barred"
+            )
+        elif peg > PEG_MAX:
+            reasons.append(
+                f"PEG = {peg:.1f} (> {PEG_MAX:.1f}); profitable, Track B barred"
+            )
+    elif not quality_gate:
+        # Unprofitable -> Track B only; rejection comes from the quality gate.
+        reasons.append("fails Track B quality gate (adj FCF<=0 or dilution>=growth)")
     return reasons or ["did not clear either track"]
 
 

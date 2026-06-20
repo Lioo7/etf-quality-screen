@@ -139,8 +139,8 @@ flagged `manual override`. A partial override patches individual fields; a
 
 Overridable fields: `name`, `revenue_ttm`, `revenue_ttm_prior`, `ocf_ttm`,
 `capex_ttm`, `sbc_ttm`, `diluted_shares_now`, `diluted_shares_prior`,
-`market_cap`, `forward_pe`, `forward_eps_growth`. Point `--overrides` elsewhere to
-use a different file.
+`market_cap`, `forward_pe`, `forward_eps_growth`, `net_income_ttm`. Point
+`--overrides` elsewhere to use a different file.
 
 ### Example output (mock)
 
