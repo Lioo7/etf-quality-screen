@@ -30,6 +30,13 @@ from .screen import Company
 
 DEFAULT_PATH = "overrides.json"
 
+# Current-snapshot balance-sheet lines a user may patch. They are NOT required to
+# rescue a name (Company supplies gate-passing defaults), so a sparse override
+# still validates while still being able to correct any single balance-sheet line.
+_BALANCE_SHEET = {
+    "total_debt", "cash_and_equivalents", "goodwill", "total_assets",
+    "operating_income", "total_equity",
+}
 # Fields a user may override / supply. Scalar snapshot lines only — annual
 # `history` is intentionally not overridable here, so an override-rescued name
 # carries no history and lands in INSUFFICIENT_HISTORY when the gate runs.
@@ -37,9 +44,10 @@ _OVERRIDABLE = {
     "name", "revenue_ttm", "revenue_ttm_prior", "ocf_ttm", "capex_ttm",
     "sbc_ttm", "diluted_shares_now", "diluted_shares_prior", "market_cap",
     "forward_pe", "forward_eps_growth", "net_income_ttm",
-}
-# Fields that must all be present to construct a Company from scratch.
-_REQUIRED = _OVERRIDABLE - {"name", "forward_pe"}
+} | _BALANCE_SHEET
+# Fields that must all be present to construct a Company from scratch (the
+# balance-sheet lines are excluded — they fall back to Company defaults).
+_REQUIRED = _OVERRIDABLE - {"name", "forward_pe"} - _BALANCE_SHEET
 
 
 def load_overrides(path: str | Path = DEFAULT_PATH) -> dict[str, dict]:
@@ -77,11 +85,13 @@ def company_from_override(ticker: str, fields: dict) -> Company | None:
     if not _REQUIRED.issubset(fields):
         return None
     numeric = {k: fields[k] for k in _REQUIRED}
+    # Honor any supplied balance-sheet lines; the rest fall back to Company defaults.
+    extra = {k: fields[k] for k in _BALANCE_SHEET if k in fields}
     company = Company(
         ticker=ticker, forward_pe=fields.get("forward_pe"),
-        basis="override", **numeric,
+        basis="override", **numeric, **extra,
     )
-    supplied = set(numeric)
+    supplied = set(numeric) | set(extra)
     if "forward_pe" in fields:
         supplied.add("forward_pe")
     if "name" in fields:

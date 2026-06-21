@@ -30,6 +30,8 @@ _COMPANY_FIELDS = (
     "ticker", "revenue_ttm", "revenue_ttm_prior", "ocf_ttm", "capex_ttm",
     "sbc_ttm", "diluted_shares_now", "diluted_shares_prior", "market_cap",
     "forward_pe", "forward_eps_growth", "net_income_ttm",
+    "total_debt", "cash_and_equivalents", "goodwill", "total_assets",
+    "operating_income", "total_equity", "goodwill_assumed_zero", "debt_assumed_zero",
     "low_confidence", "name", "basis",
     "sbc_assumed_zero", "overridden_fields", "sector", "industry", "history",
 )
@@ -74,11 +76,15 @@ class MockProvider(DataProvider):
     name = "mock"
 
     #: A tiny, hand-built universe mirroring the acceptance-test archetypes.
-    #: The synthetic DURABLE/DECEL/NEWLY/BURN names exercise every consistency
-    #: gate branch in a ``--provider mock --consistency-years 3`` run.
+    #: DURABLE/DECEL/NEWLY/BURN exercise the consistency gate; ROLLUP/LEVERED
+    #: exercise the balance-sheet gates (goodwill / leverage). Every entry carries
+    #: current-snapshot balance-sheet lines so a ``--provider mock`` run drives the
+    #: full Task-3 gate set.
     DATA: dict[str, Company] = {
         "MSFT": Company("MSFT", 245000, 212000, 118000, 28000, 10000,
                         7430, 7450, 3100000, 32.0, 14.0, 88000,
+                        total_debt=97000, cash_and_equivalents=75000, goodwill=67000,
+                        total_assets=512000, operating_income=109000, total_equity=238000,
                         name="Microsoft Corporation", basis="TTM",
                         sector="Technology", industry="Software—Infrastructure",
                         history=[
@@ -89,6 +95,8 @@ class MockProvider(DataProvider):
                         ]),
         "GOOGL": Company("GOOGL", 328000, 283000, 110000, 32000, 22000,
                          12200, 12500, 2100000, 21.0, 16.0, 74000,
+                         total_debt=13000, cash_and_equivalents=110000, goodwill=30000,
+                         total_assets=450000, operating_income=110000, total_equity=310000,
                          name="Alphabet Inc.", basis="TTM",
                          sector="Communication Services",
                          industry="Internet Content & Information",
@@ -99,8 +107,11 @@ class MockProvider(DataProvider):
                              AnnualPeriod("2024", 328000, 110000, 32000, 22000),
                          ]),
         # Passes snapshot Track B; clears the gate (adj FCF > 0 every year).
+        # GAAP-unprofitable (negative EBIT) -> ROIC gate bypassed.
         "CRWD": Company("CRWD", 3500, 2400, 1100, 120, 500, 245, 235,
                         80000, None, 30.0, -150,
+                        total_debt=700, cash_and_equivalents=3500, goodwill=150,
+                        total_assets=6500, operating_income=-50, total_equity=3000,
                         name="CrowdStrike Holdings, Inc.", basis="TTM",
                         sector="Technology", industry="Software—Infrastructure",
                         history=[
@@ -108,9 +119,11 @@ class MockProvider(DataProvider):
                             AnnualPeriod("2023", 2400, 800, 90, 380),
                             AnnualPeriod("2024", 3500, 1100, 120, 500),
                         ]),
-        # Passes snapshot Track A; clears the gate (Rule40 >= 40 every year).
+        # Passes snapshot Track A and every balance-sheet gate incl. ROIC>=10%.
         "DURABLE": Company("DURABLE", 1000, 700, 400, 50, 50, 1000, 1000,
                            5000, 30.0, 20.0, 200,
+                           total_debt=0, cash_and_equivalents=300, goodwill=0,
+                           total_assets=1500, operating_income=200, total_equity=1000,
                            name="Durable Compounder Inc.", basis="TTM",
                            sector="Technology", industry="Software—Application",
                            history=[
@@ -119,9 +132,11 @@ class MockProvider(DataProvider):
                                AnnualPeriod("2023", 845, 340, 40, 40),
                                AnnualPeriod("2024", 1100, 440, 50, 50),
                            ]),
-        # Passes snapshot Track A but a windowed year decelerates < 40 -> FAIL.
+        # Passes snapshot Track A but a windowed year decelerates < 40 (strict FAIL).
         "DECEL": Company("DECEL", 1000, 700, 400, 50, 50, 1000, 1000,
                          5000, 30.0, 20.0, 200,
+                         total_debt=0, cash_and_equivalents=300, goodwill=0,
+                         total_assets=1500, operating_income=200, total_equity=1000,
                          name="Decelerator Corp.", basis="TTM",
                          sector="Technology", industry="Software—Application",
                          history=[
@@ -133,6 +148,8 @@ class MockProvider(DataProvider):
         # Passes snapshot Track A but only 2 annual years -> INSUFFICIENT_HISTORY.
         "NEWLY": Company("NEWLY", 1000, 700, 400, 50, 50, 1000, 1000,
                          5000, 30.0, 20.0, 200,
+                         total_debt=0, cash_and_equivalents=300, goodwill=0,
+                         total_assets=1500, operating_income=200, total_equity=1000,
                          name="Newly Public Inc.", basis="TTM",
                          sector="Technology", industry="Software—Application",
                          history=[
@@ -142,6 +159,8 @@ class MockProvider(DataProvider):
         # Passes snapshot Track B but an early year had adj FCF <= 0 -> FAIL.
         "BURN": Company("BURN", 3500, 2400, 1100, 120, 500, 245, 235,
                         70000, None, 30.0, -150,
+                        total_debt=700, cash_and_equivalents=2000, goodwill=100,
+                        total_assets=5000, operating_income=-50, total_equity=2500,
                         name="Cash Burner Ltd.", basis="TTM",
                         sector="Technology", industry="Software—Infrastructure",
                         history=[
@@ -149,6 +168,34 @@ class MockProvider(DataProvider):
                             AnnualPeriod("2023", 2400, 600, 80, 300),
                             AnnualPeriod("2024", 3500, 1100, 120, 500),
                         ]),
+        # Clears snapshot Track A + the consistency gate, but goodwill is 60% of
+        # assets (> 40%) -> REJECTED on the goodwill gate (serial-acquirer profile).
+        "ROLLUP": Company("ROLLUP", 1000, 700, 400, 50, 50, 1000, 1000,
+                          5000, 30.0, 20.0, 200,
+                          total_debt=0, cash_and_equivalents=300, goodwill=1200,
+                          total_assets=2000, operating_income=200, total_equity=1000,
+                          name="Rollup Acquirer Inc.", basis="TTM",
+                          sector="Technology", industry="Software—Application",
+                          history=[
+                              AnnualPeriod("2021", 500, 200, 25, 25),
+                              AnnualPeriod("2022", 650, 260, 30, 30),
+                              AnnualPeriod("2023", 845, 340, 40, 40),
+                              AnnualPeriod("2024", 1100, 440, 50, 50),
+                          ]),
+        # Clears snapshot Track A + the consistency gate, but net debt is 3.7x FCF
+        # (> 3.0) -> REJECTED on the leverage gate.
+        "LEVERED": Company("LEVERED", 1000, 700, 400, 50, 50, 1000, 1000,
+                           5000, 30.0, 20.0, 200,
+                           total_debt=1500, cash_and_equivalents=200, goodwill=0,
+                           total_assets=2000, operating_income=300, total_equity=1000,
+                           name="Levered Compounder Inc.", basis="TTM",
+                           sector="Technology", industry="Software—Application",
+                           history=[
+                               AnnualPeriod("2021", 500, 200, 25, 25),
+                               AnnualPeriod("2022", 650, 260, 30, 30),
+                               AnnualPeriod("2023", 845, 340, 40, 40),
+                               AnnualPeriod("2024", 1100, 440, 50, 50),
+                           ]),
     }
 
     def _fetch_uncached(self, ticker: str) -> Company:
@@ -191,6 +238,11 @@ class YFinanceProvider(DataProvider):
             ) from exc
 
         tk = yf.Ticker(ticker)
+        q_bal = _df(tk, "quarterly_balance_sheet", "quarterly_balancesheet")
+        a_bal = _df(tk, "balance_sheet", "balancesheet")
+        # Never-fabricate guard: the balance-sheet gates need a real snapshot.
+        if q_bal is None and a_bal is None:
+            raise DataUnavailable(f"{ticker}: balance sheet unavailable from yfinance")
         return _extract_yf(
             ticker,
             q_inc=_df(tk, "quarterly_income_stmt", "quarterly_financials"),
@@ -198,6 +250,7 @@ class YFinanceProvider(DataProvider):
             q_cf=_df(tk, "quarterly_cashflow", "quarterly_cash_flow"),
             a_cf=_df(tk, "cashflow", "cash_flow"),
             info=_info(tk),
+            q_bal=q_bal, a_bal=a_bal,
         )
 
 
@@ -212,13 +265,29 @@ _NET_INCOME = [
     "Net Income Common Stockholders",
     "Net Income From Continuing Operation Net Minority Interest",
 ]
+# Operating income (EBIT) from the income statement; balance-sheet snapshot lines.
+_EBIT = ["Operating Income", "EBIT", "Total Operating Income As Reported"]
+_TOTAL_DEBT = ["Total Debt"]
+_CASH = ["Cash And Cash Equivalents", "Cash Cash Equivalents And Short Term Investments"]
+_GOODWILL = ["Goodwill"]
+_TOTAL_ASSETS = ["Total Assets"]
+_TOTAL_EQUITY = [
+    "Stockholders Equity",
+    "Total Equity Gross Minority Interest",
+    "Common Stock Equity",
+]
 
 
-def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info) -> Company:
+def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info, q_bal=None, a_bal=None) -> Company:
     """Build a Company from Yahoo statement frames, on a single consistent basis.
 
     Factored out of the provider (no network here) so the basis-selection and
     SBC-assumed-0 logic is unit-testable with hand-built DataFrames.
+
+    Balance-sheet frames are optional here: when both are absent (the synthetic
+    unit-test path) the balance-sheet fields fall back to gate-passing defaults.
+    The never-fabricate guard for real runs lives in ``_fetch_uncached``, which
+    raises before calling this when Yahoo exposes no balance sheet at all.
     """
     # Cash flow entirely absent -> genuinely no data -> skip the name.
     if q_cf is None and a_cf is None:
@@ -298,6 +367,42 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info) -> Company:
         forward_eps_growth = 0.0
     low_conf.append("forward EPS growth is a rough Yahoo proxy")
 
+    # Operating income (EBIT) for ROIC, on the SAME basis as revenue. Absent ->
+    # NaN so ROIC is treated as not-computable (advisory), never a false reject.
+    ebit_vals = _row(q_inc if basis == "TTM" else a_inc, _EBIT)
+    ebit_found = len(ebit_vals) >= 4 if basis == "TTM" else bool(ebit_vals)
+    if ebit_found:
+        operating_income = sum(ebit_vals[:4]) if basis == "TTM" else ebit_vals[0]
+    else:
+        operating_income = float("nan")
+        low_conf.append("operating income (EBIT) not reported - ROIC not computable")
+
+    # Balance-sheet snapshot (most-recent column). Cash / total assets / total
+    # equity are REQUIRED; goodwill and total debt get the assumed-zero treatment.
+    bal = q_bal if q_bal is not None else a_bal
+    if bal is None:
+        total_debt = cash = goodwill = 0.0
+        total_assets = total_equity = 1000.0
+        goodwill_assumed_zero = debt_assumed_zero = False
+    else:
+        cash = _bal_amount(bal, _CASH)
+        total_assets = _bal_amount(bal, _TOTAL_ASSETS)
+        total_equity = _bal_amount(bal, _TOTAL_EQUITY)
+        if cash is None or total_assets is None or total_equity is None:
+            raise DataUnavailable(
+                f"{ticker}: balance sheet missing cash / total assets / total equity"
+            )
+        gw = _bal_amount(bal, _GOODWILL)
+        goodwill_assumed_zero = gw is None
+        goodwill = gw if gw is not None else 0.0
+        if goodwill_assumed_zero:
+            low_conf.append("goodwill not reported by source - assumed 0")
+        td = _bal_amount(bal, _TOTAL_DEBT)
+        debt_assumed_zero = td is None
+        total_debt = td if td is not None else 0.0
+        if debt_assumed_zero:
+            low_conf.append("total debt not reported by source - assumed 0")
+
     name = info.get("shortName") or info.get("longName") or ticker
 
     # Sector is informational context only; never guess it. Absent -> "Unknown".
@@ -313,11 +418,21 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info) -> Company:
         market_cap=float(market_cap),
         forward_pe=float(forward_pe) if forward_pe else None,
         forward_eps_growth=forward_eps_growth, net_income_ttm=net_income_ttm,
+        total_debt=float(total_debt), cash_and_equivalents=float(cash),
+        goodwill=float(goodwill), total_assets=float(total_assets),
+        operating_income=float(operating_income), total_equity=float(total_equity),
+        goodwill_assumed_zero=goodwill_assumed_zero, debt_assumed_zero=debt_assumed_zero,
         low_confidence=low_conf,
         name=name, basis=basis, sbc_assumed_zero=sbc_assumed_zero,
         sector=sector, industry=industry,
         history=_annual_history(a_inc, a_cf),
     )
+
+
+def _bal_amount(bal, labels):
+    """Most-recent balance-sheet value for the first matching label, or None."""
+    vals = _row(bal, labels)
+    return vals[0] if vals else None
 
 
 def _df(tk, *attrs):
@@ -478,6 +593,13 @@ class FMPProvider(DataProvider):
         if not sbc_found:
             low_conf.append("SBC not reported by source - assumed 0")
 
+        # Operating income (EBIT) for ROIC; absent -> NaN (ROIC not computable).
+        if any(q.get("operatingIncome") is None for q in inc[:4]):
+            operating_income = float("nan")
+            low_conf.append("operating income (EBIT) not reported - ROIC not computable")
+        else:
+            operating_income = sum(q["operatingIncome"] for q in inc[:4])
+
         quote = self._get(f"quote/{ticker}")[0]
         market_cap = quote["marketCap"]
         price, ttm_eps = quote.get("price"), quote.get("eps")
@@ -503,6 +625,34 @@ class FMPProvider(DataProvider):
             if ttm_eps and ttm_eps > 0:
                 forward_eps_growth = (fwd_eps / ttm_eps - 1) * 100
 
+        # Balance-sheet snapshot for the balance-sheet gates. Cash / total assets /
+        # total equity are REQUIRED; goodwill and total debt are assumed-zero.
+        bal = self._get(f"balance-sheet-statement/{ticker}", period="quarter", limit=1)
+        if not bal:
+            raise DataUnavailable(f"{ticker}: balance sheet unavailable from FMP")
+        b = bal[0]
+        cash = b.get("cashAndCashEquivalents")
+        if cash is None:
+            cash = b.get("cashAndShortTermInvestments")
+        total_assets = b.get("totalAssets")
+        total_equity = b.get("totalStockholdersEquity")
+        if total_equity is None:
+            total_equity = b.get("totalEquity")
+        if cash is None or total_assets is None or total_equity is None:
+            raise DataUnavailable(
+                f"{ticker}: balance sheet missing cash / total assets / total equity"
+            )
+        gw = b.get("goodwill")
+        goodwill_assumed_zero = gw is None
+        goodwill = gw if gw is not None else 0.0
+        if goodwill_assumed_zero:
+            low_conf.append("goodwill not reported by source - assumed 0")
+        td = b.get("totalDebt")
+        debt_assumed_zero = td is None
+        total_debt = td if td is not None else 0.0
+        if debt_assumed_zero:
+            low_conf.append("total debt not reported by source - assumed 0")
+
         # Annual history for the consistency gate (best-effort; never blocks a name).
         inc_a = self._get(f"income-statement/{ticker}", period="annual", limit=5)
         cf_a = self._get(f"cash-flow-statement/{ticker}", period="annual", limit=5)
@@ -513,6 +663,10 @@ class FMPProvider(DataProvider):
             diluted_shares_now=shares_now, diluted_shares_prior=shares_prior,
             market_cap=market_cap, forward_pe=forward_pe,
             forward_eps_growth=forward_eps_growth, net_income_ttm=net_income_ttm,
+            total_debt=float(total_debt), cash_and_equivalents=float(cash),
+            goodwill=float(goodwill), total_assets=float(total_assets),
+            operating_income=float(operating_income), total_equity=float(total_equity),
+            goodwill_assumed_zero=goodwill_assumed_zero, debt_assumed_zero=debt_assumed_zero,
             low_confidence=low_conf,
             name=name, basis="TTM", sbc_assumed_zero=not sbc_found,
             sector=sector, industry=industry,

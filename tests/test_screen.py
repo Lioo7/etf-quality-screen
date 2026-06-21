@@ -13,11 +13,15 @@ from etf_screen.screen import Company, evaluate, rank
 
 
 def make(ticker, rev, prior, ocf, capex, sbc, shares_now, shares_prior,
-         mcap, fwd_pe, fwd_growth, net_income=1000):
+         mcap, fwd_pe, fwd_growth, net_income=1000,
+         total_debt=0.0, cash_and_equivalents=0.0, goodwill=0.0,
+         total_assets=1000.0, operating_income=200.0, total_equity=1000.0):
     """Build a Company from the acceptance-table columns (values in $M).
 
     ``net_income`` gates routing (>0 -> Track A only, <=0 -> Track B eligible);
     it defaults positive so the divide-by-zero edge fixtures stay profitable.
+    The balance-sheet params default to gate-passing values (net cash, no goodwill,
+    healthy EBIT/equity -> ROIC >= 10%) so snapshot fixtures clear the Task-3 gates.
     """
     return Company(
         ticker=ticker,
@@ -26,6 +30,9 @@ def make(ticker, rev, prior, ocf, capex, sbc, shares_now, shares_prior,
         diluted_shares_now=shares_now, diluted_shares_prior=shares_prior,
         market_cap=mcap, forward_pe=fwd_pe, forward_eps_growth=fwd_growth,
         net_income_ttm=net_income,
+        total_debt=total_debt, cash_and_equivalents=cash_and_equivalents,
+        goodwill=goodwill, total_assets=total_assets,
+        operating_income=operating_income, total_equity=total_equity,
     )
 
 

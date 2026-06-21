@@ -19,9 +19,10 @@ from .screen import Result
 
 # Column order shared by both formats.
 COLUMNS = [
-    "ticker", "name", "sector", "track", "passed", "growth_pct",
+    "ticker", "name", "sector", "track", "status", "passed", "growth_pct",
     "adj_fcf_margin_pct", "rule40", "p_s", "ps_guardrail", "dilution_pct",
-    "sbc_pct", "peg", "net_income_ttm", "rule40_hist", "consistency",
+    "sbc_pct", "peg", "net_debt_to_fcf", "goodwill_to_assets", "roic",
+    "net_income_ttm", "rule40_hist", "consistency",
     "sector_med_rule40", "sector_med_ps", "sector_med_peg",
     "basis", "sbc_assumed_zero", "manual_override", "reason", "low_confidence",
 ]
@@ -75,11 +76,13 @@ def consistency_status(r: Result) -> str:
 def _result_row(r: Result) -> dict:
     return {
         "ticker": r.ticker, "name": r.name, "sector": r.sector, "track": r.track,
-        "passed": r.passed, "growth_pct": _num(r.growth),
+        "status": r.status.name, "passed": r.passed, "growth_pct": _num(r.growth),
         "adj_fcf_margin_pct": _num(r.adj_margin), "rule40": _num(r.rule40),
         "p_s": _num(r.p_s), "ps_guardrail": _num(r.ps_guardrail),
         "dilution_pct": _num(r.dilution), "sbc_pct": _num(r.sbc_pct),
-        "peg": _num(r.peg), "net_income_ttm": _num(r.company.net_income_ttm),
+        "peg": _num(r.peg), "net_debt_to_fcf": _num(r.net_debt_to_fcf),
+        "goodwill_to_assets": _num(r.goodwill_to_assets), "roic": _num(r.roic),
+        "net_income_ttm": _num(r.company.net_income_ttm),
         "rule40_hist": rule40_hist(r), "consistency": consistency_status(r),
         "sector_med_rule40": _sector_med(r, "rule40"),
         "sector_med_ps": _sector_med(r, "p_s"), "sector_med_peg": _sector_med(r, "peg"),

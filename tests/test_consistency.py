@@ -9,8 +9,9 @@ import pytest
 
 from etf_screen.export import rule40_hist
 from etf_screen.screen import (
-    AnnualPeriod, Company, ConsistencyStatus, _fmt_trajectory, _period_metrics,
-    evaluate, track_a_consistency, track_b_consistency,
+    AnnualPeriod, Company, ConsistencyStatus, ScreenStatus, _fmt_trajectory,
+    _period_metrics, _rule40_consistent, evaluate, track_a_consistency,
+    track_b_consistency,
 )
 
 
@@ -84,7 +85,8 @@ def test_period_metrics_matches_snapshot():
 
 # --- Track A ------------------------------------------------------------------
 def test_track_a_pass():
-    r = evaluate(track_a_company(DURABLE_HISTORY), consistency_years=3)
+    r = evaluate(track_a_company(DURABLE_HISTORY), consistency_years=3,
+                 consistency_mode="strict")
     assert r.passed and r.track == "Track A"
     assert r.consistency.status is ConsistencyStatus.PASS
     assert not r.insufficient_history
@@ -94,8 +96,8 @@ def test_track_a_fail_is_demoted_by_gate_not_snapshot():
     c = track_a_company(DECEL_HISTORY)
     # Passes the SNAPSHOT alone...
     assert evaluate(c, consistency_years=0).passed
-    # ...but is rejected once the gate runs (mirrors the ALNY anomaly).
-    r = evaluate(c, consistency_years=3)
+    # ...but is rejected once the STRICT gate runs (mirrors the ALNY anomaly).
+    r = evaluate(c, consistency_years=3, consistency_mode="strict")
     assert not r.passed and r.track == "—"
     assert r.consistency.status is ConsistencyStatus.FAIL
     assert not r.insufficient_history
@@ -105,7 +107,8 @@ def test_track_a_fail_is_demoted_by_gate_not_snapshot():
 
 def test_track_a_insufficient():
     # Only 2 periods cannot form 3 windowed growth-years (need 4).
-    r = evaluate(track_a_company(DURABLE_HISTORY[-2:]), consistency_years=3)
+    r = evaluate(track_a_company(DURABLE_HISTORY[-2:]), consistency_years=3,
+                 consistency_mode="strict")
     assert not r.passed and r.track == "—"
     assert r.insufficient_history
     assert r.consistency.status is ConsistencyStatus.INSUFFICIENT
@@ -188,3 +191,61 @@ def test_track_b_consistency_direct_floor():
     # Direct call: floor is min(2, years); 1 available year -> INSUFFICIENT.
     res = track_b_consistency(TRACK_B_PASS_HISTORY[-1:], 3)
     assert res.status is ConsistencyStatus.INSUFFICIENT
+
+
+# --- strict vs trend decision (windowed Rule-of-40 values, oldest -> newest) ---
+@pytest.mark.parametrize("vals", [
+    [-0.2, 127.9, 138.1],   # APP-like: sub-floor launch year (i==0) forgiven
+    [37.2, 38.9, 43.8],     # ADBE-like: never < 40 in strict terms, but trends up
+    [30.2, 38.9, 43.6],     # SHOP-like: averages well, ends strong
+    [-5.0, 60.0, 70.0],     # launch year forgiven, then compounding
+])
+def test_trend_pass(vals):
+    assert _rule40_consistent(vals, "trend")
+
+
+@pytest.mark.parametrize("vals", [
+    [66.4, 9.0, 68.3],      # ALNY-like: lumpy sub-floor collapse (9.0 from 66.4)
+    [22.0, 24.0, 41.0],     # chronic weakness: mean 29 < 30 backstop
+    [50.0, 24.0, 41.0],     # lumpy collapse mid-window (24 < 25 and < prior 50)
+])
+def test_trend_reject(vals):
+    assert not _rule40_consistent(vals, "trend")
+
+
+def test_trend_recency_anchor_requires_latest_year():
+    # Strong history but the latest year slips below 40 -> trend FAIL.
+    assert not _rule40_consistent([60.0, 70.0, 38.0], "trend")
+
+
+def test_strict_is_stricter_than_trend():
+    vals = [37.2, 38.9, 43.8]            # a dip below 40 that trend forgives
+    assert not _rule40_consistent(vals, "strict")
+    assert _rule40_consistent(vals, "trend")
+
+
+def test_decel_history_passes_under_trend_but_fails_strict():
+    c = track_a_company(DECEL_HISTORY)
+    assert not evaluate(c, consistency_years=3, consistency_mode="strict").passed
+    r = evaluate(c, consistency_years=3, consistency_mode="trend")
+    assert r.passed and r.track == "Track A"
+    assert r.consistency.status is ConsistencyStatus.PASS
+
+
+def test_track_b_ignores_consistency_mode():
+    # Track B keys on adjusted FCF only; the mode flag must not change its verdict.
+    c = track_b_company(TRACK_B_PASS_HISTORY)
+    strict = evaluate(c, consistency_years=3, consistency_mode="strict")
+    trend = evaluate(c, consistency_years=3, consistency_mode="trend")
+    assert strict.passed and trend.passed and strict.track == trend.track == "Track B"
+
+
+# --- status precedence: a balance-sheet failure beats a history shortfall -----
+def test_balance_sheet_failure_precedes_insufficient_history():
+    # Goodwill 60% AND only 2 annual years: the definitive balance-sheet failure
+    # wins, so the name is REJECTED, never bucketed as INSUFFICIENT_HISTORY.
+    c = track_a_company(DURABLE_HISTORY[-2:], goodwill=1200, total_assets=2000)
+    r = evaluate(c, consistency_years=3, consistency_mode="strict")
+    assert r.status is ScreenStatus.REJECTED
+    assert not r.insufficient_history
+    assert any("Goodwill/Assets" in reason for reason in r.reasons)
