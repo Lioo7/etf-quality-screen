@@ -23,14 +23,14 @@ from etf_screen.screen import (
 
 
 def _co(ticker, sector, rev, prior, ocf, capex, sbc, mcap,
-        fwd_pe=25.0, fwd_growth=20.0):
+        fwd_pe=25.0, fwd_growth=20.0, net_income=500.0):
     """Build a sectored Company; share counts fixed so dilution is benign."""
     return Company(
         ticker=ticker, revenue_ttm=rev, revenue_ttm_prior=prior,
         ocf_ttm=ocf, capex_ttm=capex, sbc_ttm=sbc,
         diluted_shares_now=1000, diluted_shares_prior=1000,
         market_cap=mcap, forward_pe=fwd_pe, forward_eps_growth=fwd_growth,
-        sector=sector,
+        net_income_ttm=net_income, sector=sector,
     )
 
 

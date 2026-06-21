@@ -6,6 +6,7 @@ import pytest
 from etf_screen.cache import DiskCache
 from etf_screen.constituents import _looks_like_ticker, _normalize
 from etf_screen.providers import DataUnavailable, MockProvider
+from etf_screen.screen import AnnualPeriod
 
 
 def test_mock_provider_returns_known_ticker():
@@ -30,6 +31,20 @@ def test_cache_round_trip(tmp_path, monkeypatch):
     second = provider.fetch("MSFT")
     assert first == second
     assert (tmp_path / "mock").exists()
+
+
+def test_cache_round_trip_preserves_history(tmp_path, monkeypatch):
+    import etf_screen.cache as cache_mod
+
+    monkeypatch.setattr(cache_mod, "CACHE_ROOT", tmp_path)
+    provider = MockProvider(cache=DiskCache("mock"))
+
+    first = provider.fetch("DURABLE")    # populated annual history
+    second = provider.fetch("DURABLE")   # reconstructed from JSON on disk
+    assert first.history and first == second
+    # Nested AnnualPeriod records must round-trip as real dataclasses, not dicts.
+    assert all(isinstance(p, AnnualPeriod) for p in second.history)
+    assert [p.fiscal_label for p in second.history] == ["2021", "2022", "2023", "2024"]
 
 
 def test_normalize_dotted_ticker():

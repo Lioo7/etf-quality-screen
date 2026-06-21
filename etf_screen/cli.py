@@ -25,7 +25,7 @@ from .cache import DiskCache
 from .constituents import holdings_from_csv, resolve
 from .overrides import apply_override, company_from_override, load_overrides
 from .providers import PROVIDERS, DataProvider, DataUnavailable
-from .screen import Result, annotate_sector_context, evaluate, rank
+from .screen import Result, ScreenStatus, annotate_sector_context, evaluate, rank
 
 
 @dataclass
@@ -68,6 +68,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rank", choices=("rule40", "sector-relative"), default="rule40",
                    help="survivor ordering: absolute Rule of 40 (default) or "
                         "within-sector attractiveness (informational re-sort only)")
+    p.add_argument("--consistency-years", type=int, default=3,
+                   help="multi-year consistency gate window (default: 3); 0 bypasses "
+                        "the gate entirely for a snapshot-only baseline run")
+    p.add_argument("--consistency-mode", choices=("strict", "trend"), default="trend",
+                   help="Track-A durability rule: 'trend' (default, trajectory-aware "
+                        "— recency anchor + average + no lumpy collapse) or 'strict' "
+                        "(Rule of 40 in every year). Track B is unaffected.")
     return p
 
 
@@ -97,18 +104,23 @@ def _make_provider(args) -> DataProvider:
         raise SystemExit(2)
 
 
-def _screen_one(provider, ticker, override) -> Result | Skipped:
+def _screen_one(provider, ticker, override, consistency_years=0,
+                consistency_mode="trend") -> Result | Skipped:
     """Fetch + (optionally override) + evaluate one ticker, or report it skipped."""
     try:
         company = provider.fetch(ticker)
         if override:
             company = apply_override(company, override)
-        return evaluate(company)
+        return evaluate(company, consistency_years=consistency_years,
+                        consistency_mode=consistency_mode)
     except DataUnavailable as exc:
         if override:  # provider had nothing, but the user supplied verified data
             rescued = company_from_override(ticker, override)
             if rescued is not None:
-                return evaluate(rescued)
+                # An override-rescued name carries no annual history, so the gate
+                # will route it to INSUFFICIENT_HISTORY when enabled.
+                return evaluate(rescued, consistency_years=consistency_years,
+                                consistency_mode=consistency_mode)
         return Skipped(ticker, str(exc))
     except Exception as exc:  # unexpected provider/parse error -> report, skip
         return Skipped(ticker, f"unexpected error: {exc}")
@@ -128,7 +140,9 @@ def run(args) -> int:
     results: list[Result] = []
     skipped: list[Skipped] = []
     for i, ticker in enumerate(tickers):
-        outcome = _screen_one(provider, ticker, overrides.get(ticker))
+        outcome = _screen_one(provider, ticker, overrides.get(ticker),
+                              consistency_years=args.consistency_years,
+                              consistency_mode=args.consistency_mode)
         (skipped if isinstance(outcome, Skipped) else results).append(outcome)
         if args.throttle and i < len(tickers) - 1:
             time.sleep(args.throttle)
@@ -158,8 +172,17 @@ def _do_export(args, source, as_of, results, skipped, names, label) -> None:
 def _report(args, source, as_of, stale, tickers, results, skipped, names,
             sector_stats, label) -> None:
     survivors = rank(results, mode=args.rank)
-    rejected = [r for r in results if not r.passed]
+    # PRE_REVENUE and INSUFFICIENT_HISTORY names each get their own section; keep
+    # them out of the ordinary rejection list (a failed-gate name stays a normal reject).
+    pre_revenue = [r for r in results if r.status is ScreenStatus.PRE_REVENUE]
+    insufficient = [r for r in results if r.insufficient_history]
+    rejected = [r for r in results if not r.passed and not r.insufficient_history
+                and r.status is not ScreenStatus.PRE_REVENUE]
     sbc_assumed = [r for r in results if r.sbc_assumed_zero]
+    bs_assumed = [r for r in results
+                  if r.company.goodwill_assumed_zero or r.company.debt_assumed_zero]
+    gated_out = sum(1 for r in rejected
+                    if any("consistency gate" in reason for reason in r.reasons))
 
     # --- provenance header ---
     print("=" * 78)
@@ -178,6 +201,16 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
     print(f"  could not source: {len(skipped)}")
     print(f"  passed          : {len(survivors)}")
     print(f"  rejected        : {len(rejected)}")
+    if pre_revenue:
+        print(f"  pre-revenue     : {len(pre_revenue)} (firewall — no metric math)")
+    print("  rejected by balance-sheet gate (names may fail more than one):")
+    print(f"    Leverage >3x  : {sum(1 for r in rejected if not r.pass_leverage)}")
+    print(f"    Goodwill >40% : {sum(1 for r in rejected if not r.pass_goodwill)}")
+    print(f"    ROIC <10%     : {sum(1 for r in rejected if r.roic_applied and not r.pass_roic)}")
+    if args.consistency_years:
+        print(f"  consistency gate: {gated_out} demoted, "
+              f"{len(insufficient)} insufficient history "
+              f"({args.consistency_years}-yr window)")
     print(f"  SBC assumed 0   : {len(sbc_assumed)} (review below)")
     print("  rejected by filter (names may fail more than one):")
     print(f"    Rule of 40    : {sum(1 for r in rejected if not r.pass_rule40)}")
@@ -194,9 +227,12 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
             i + 1, r.ticker, _short(r.name), _short(r.sector, 20), r.track,
             _f(r.growth), _f(r.adj_margin), _f(r.rule40), _f(r.p_s, 1),
             _f(r.dilution), _f(r.sbc_pct), _peg(r.peg),
+            _f(r.net_debt_to_fcf, 1), _pct(r.goodwill_to_assets, 0), _pct(r.roic),
+            export_mod.rule40_hist(r),
         ] for i, r in enumerate(survivors)]
         headers = ["#", "Ticker", "Company", "Sector", "Track", "Growth%",
-                   "AdjFCF%", "Rule40", "P/S", "Dil%", "SBC%", "PEG"]
+                   "AdjFCF%", "Rule40", "P/S", "Dil%", "SBC%", "PEG",
+                   "NetDebt/FCF", "GW/Assets%", "ROIC%", "Rule40 Hist"]
         print(tabulate(rows, headers=headers, floatfmt=".1f"))
     else:
         print("  (empty — a strict screen producing no survivors is a valid result)")
@@ -227,6 +263,36 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
             verdict = r.track if r.passed else "rejected"
             print(f"  {r.ticker} ({_short(r.name)}): {verdict} "
                   f"(Rule40 {_f(r.rule40)}, SBC% shown as {_f(r.sbc_pct)})")
+
+    # --- balance-sheet assumed-0 review section ---
+    if bs_assumed:
+        print(f"\nBalance-sheet line assumed 0 ({len(bs_assumed)}) — source reported no "
+              f"goodwill/total-debt line; VERIFY before trusting the leverage/goodwill gates:")
+        for r in bs_assumed:
+            lines = []
+            if r.company.goodwill_assumed_zero:
+                lines.append("goodwill")
+            if r.company.debt_assumed_zero:
+                lines.append("total debt")
+            verdict = r.track if r.passed else "rejected"
+            print(f"  {r.ticker} ({_short(r.name)}): {verdict} "
+                  f"(assumed 0: {', '.join(lines)})")
+
+    # --- pre-revenue firewall ---
+    if pre_revenue:
+        print(f"\nPRE_REVENUE ({len(pre_revenue)}) — no trailing revenue; the firewall "
+              f"fired before any metric math:")
+        for r in pre_revenue:
+            print(f"  {r.ticker} ({_short(r.name)})")
+
+    # --- insufficient history (cleared the snapshot, lacked annual history) ---
+    if insufficient:
+        print(f"\nINSUFFICIENT_HISTORY ({len(insufficient)}) — cleared the snapshot "
+              f"but lacked a long enough annual record for the consistency gate:")
+        for r in insufficient:
+            c = r.consistency
+            print(f"  {r.ticker} ({_short(r.name)}): "
+                  f"{c.years_available} of {c.years_required} yrs available")
 
     # --- could not source ---
     if skipped:
@@ -296,6 +362,11 @@ def _f(x: float, nd: int = 1) -> str:
 
 def _peg(peg) -> str:
     return "N/A" if peg is None else f"{peg:.2f}"
+
+
+def _pct(x, nd: int = 1) -> str:
+    """Render a ratio as a percentage; None or NaN -> N/A (e.g. ROIC, goodwill/assets)."""
+    return "N/A" if x is None or isnan(x) else f"{x * 100:.{nd}f}"
 
 
 def _short(s: str, n: int = 24) -> str:
