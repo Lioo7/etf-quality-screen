@@ -2,8 +2,8 @@
 
 A small, well-tested CLI that screens the current Invesco QQQ (Nasdaq-100)
 constituents — or any ETF/ticker list — through a four-filter, two-track
-quality-growth methodology, pulling live fundamentals from a **pluggable** data
-provider.
+quality-growth methodology — with balance-sheet and multi-year durability gates
+layered on top — pulling live fundamentals from a **pluggable** data provider.
 
 > ⚠️ **Disclaimer — not investment advice.** This tool is for **educational and
 > screening purposes only**. It is not investment advice or a recommendation to
@@ -16,7 +16,7 @@ Screening logic and data sourcing are kept strictly separate:
 
 | Module | Responsibility | Network? |
 | --- | --- | --- |
-| `etf_screen/screen.py` | `Company`, `evaluate()`, ranking | No |
+| `etf_screen/screen.py` | `Company`, `evaluate()` (filters, tracks, gates), ranking | No |
 | `etf_screen/providers.py` | `DataProvider` ABC + yfinance / FMP / Mock | Yes |
 | `etf_screen/constituents.py` | resolve ETF holdings → tickers (Wikipedia, static, or issuer CSV) | Yes |
 | `etf_screen/cache.py` | per-day disk cache | No |
@@ -53,6 +53,38 @@ ratios.
 > (GAAP-unprofitable). A *profitable* name that fails PEG is **rejected** — it must
 > not slip into Track B. The `PriceyButProfitable` acceptance test enforces this.
 
+**Pre-revenue firewall.** Before any of the above runs, a name with no trailing
+revenue (`revenue_ttm ≤ 0`) is short-circuited to `PRE_REVENUE` — no growth, no
+margin, no divide-by-zero. (A name with revenue now but a zero *prior* year is a
+separate "not evaluable" case.)
+
+**Balance-sheet gates (current snapshot).** A name that clears the snapshot is
+then checked against its latest balance sheet — these can only *reject*, never
+rescue:
+
+- **Leverage** — net debt ÷ FCF ≤ 3 (net-cash names pass automatically; net debt
+  with non-positive FCF fails).
+- **Goodwill** — goodwill ≤ 40% of total assets (catches goodwill-heavy serial
+  acquirers).
+- **ROIC** — pre-tax operating income ÷ invested capital ≥ 10%. Applied **only to
+  a Track-A name under `strict` consistency mode**; advisory (never a failure)
+  when it can't be computed.
+
+**Multi-year consistency gate.** Optional durability check over annual history
+(`--consistency-years N`, default 3) layered on a snapshot qualifier:
+
+- **Track A** — Rule of 40 across the last *N* windowed years. `--consistency-mode`
+  picks the rule: **`strict`** (≥ 40 every year) or **`trend`** (the default —
+  passes if the latest year is ≥ 40, the *N*-year mean is ≥ 30, and there's no
+  lumpy collapse below 25 from a higher prior year; a soft launch year is
+  forgiven). Trend rewards a durable trajectory without punishing one dip.
+- **Track B** — adjusted FCF > 0 in every available year (mode-independent).
+- Too little history → the name is set aside as `INSUFFICIENT_HISTORY`, reported
+  separately rather than silently passed or failed.
+
+When multiple gates fail, a balance-sheet failure is definitive and takes
+precedence over the history checks in the verdict.
+
 Survivors are ranked by Rule of 40 (desc), tie-broken by PEG (asc), then P/S
 headroom.
 
@@ -80,12 +112,18 @@ python -m etf_screen.cli --provider mock --tickers MSFT,GOOGL,CRWD
 
 # Screen the S&P 500 instead, throttling requests
 python -m etf_screen.cli --universe spy --throttle 1 --limit 50
+
+# Strict durability and a snapshot-only baseline (no history gate)
+python -m etf_screen.cli --universe qqq --consistency-mode strict
+python -m etf_screen.cli --universe qqq --consistency-years 0
 ```
 
 Flags: `--provider {yfinance,fmp,mock}` · `--universe <etf>` · `--holdings PATH`
 · `--tickers a,b,c` · `--limit N` · `--refresh` (ignore cache) · `--no-cache`
 · `--throttle SECONDS` · `--overrides PATH` · `--export {csv,md}` · `--out PATH`
-· `--sector-context` · `--rank {rule40,sector-relative}`.
+· `--sector-context` · `--rank {rule40,sector-relative}`
+· `--consistency-years N` (default 3; `0` bypasses the history gate)
+· `--consistency-mode {strict,trend}` (default `trend`).
 
 ### Sector context (informational)
 
@@ -139,8 +177,10 @@ flagged `manual override`. A partial override patches individual fields; a
 
 Overridable fields: `name`, `revenue_ttm`, `revenue_ttm_prior`, `ocf_ttm`,
 `capex_ttm`, `sbc_ttm`, `diluted_shares_now`, `diluted_shares_prior`,
-`market_cap`, `forward_pe`, `forward_eps_growth`, `net_income_ttm`. Point
-`--overrides` elsewhere to use a different file.
+`market_cap`, `forward_pe`, `forward_eps_growth`, `net_income_ttm`, and the
+balance-sheet lines `total_debt`, `cash_and_equivalents`, `goodwill`,
+`total_assets`, `operating_income`, `total_equity`. Point `--overrides` elsewhere
+to use a different file.
 
 ### Example output (mock)
 
@@ -159,17 +199,25 @@ Phase-1 elimination counts
   could not source: 0
   passed          : 1
   rejected        : 2
+  rejected by balance-sheet gate (names may fail more than one):
+    Leverage >3x  : 0
+    Goodwill >40% : 0
+    ROIC <10%     : 0
+  consistency gate: 0 demoted, 0 insufficient history (3-yr window)
   ...
 
 Shortlist (1 names) — ranked by Rule of 40
 
-  #  Ticker  Company                   Sector      Track    Growth%  AdjFCF%  Rule40   P/S  Dil%  SBC%  PEG
----  ------  ------------------------  ----------  -------  -------  -------  ------  ----  ----  ----  ----
-  1  CRWD    CrowdStrike Holdings, I…  Technology  Track B     45.8     13.7    59.5  22.9   4.3  14.3  N/A
+  #  Ticker  Company        Sector      Track    Growth%  AdjFCF%  Rule40   P/S  ...  NetDebt/FCF  GW/Assets%  ROIC%  Rule40 Hist
+---  ------  -------------  ----------  -------  -------  -------  ------  ----  ---  -----------  ----------  -----  --------------
+  1  CRWD    CrowdStrike…   Technology  Track B     45.8     13.7    59.5  22.9  ...          0.0           2  -25.0  [63.8 -> 59.5]
 
 Why survivors passed:
   CRWD (CrowdStrike Holdings,…): Track B (Rule40 59.5, P/S 22.9 vs guardrail 22.9, SBC 14.3%)
 ```
+
+(The real table also carries the `Dil%`, `SBC%`, and `PEG` columns between `P/S`
+and the balance-sheet block — elided as `...` here for width.)
 
 ## Example runs
 
@@ -207,6 +255,11 @@ over:**
   genuinely report ~0). Only when the cash-flow statement can't be retrieved at
   all is the name skipped. Supply a verified figure via `overrides.json` to
   resolve it.
+- **Balance sheet, same discipline.** Cash, total assets, and total equity are
+  required (their absence skips the name); goodwill and total debt are treated as
+  0 when absent and flagged (`goodwill_assumed_zero` / `debt_assumed_zero`); a
+  missing operating-income (EBIT) line just makes ROIC advisory rather than
+  guessing it. If Yahoo exposes no balance sheet at all, the name is skipped.
 - Forward EPS growth is a rough Yahoo proxy, always flagged `low-confidence`.
 
 ### FMP (optional upgrade — requires a paid tier)
@@ -290,9 +343,10 @@ work, not the end of it.
    or cyclical? Is there a real moat? Is a high Rule of 40 a one-off — a biotech
    milestone payment, a one-time licensing deal, a pull-forward — or a repeatable
    engine? The screen sees one trailing window; you have to supply the narrative.
-3. **Read the trust flags.** The "could not source", "SBC assumed 0", `annual`
-   basis, and `low-confidence` annotations tell you how much to trust each row.
-   A pass built on assumed-zero SBC or an annual-basis fallback is a softer pass.
+3. **Read the trust flags.** The "could not source", "SBC assumed 0",
+   "balance-sheet line assumed 0", `annual` basis, and `low-confidence`
+   annotations tell you how much to trust each row. A pass built on assumed-zero
+   SBC/goodwill or an annual-basis fallback is a softer pass.
 4. **Use the sector context** to compare like-with-like (see above) — a
    capital-intensive name that looks expensive on an absolute P/S may be cheap
    for its sector, and vice-versa.
@@ -328,10 +382,12 @@ consult a qualified professional before any financial decision.
 ## Development
 
 ```bash
-pytest -q          # 44 tests: acceptance fixtures, edge cases, data layer,
+pytest -q          # 85 tests: acceptance fixtures, edge cases, data layer,
                    # basis consistency, SBC-assumed-0, overrides, export,
                    # sector context (incl. the verdicts-unchanged regression),
-                   # and the issuer-holdings-CSV loader
+                   # the issuer-holdings-CSV loader, the multi-year consistency
+                   # gate (strict + trend), the balance-sheet gates, and the
+                   # pre-revenue firewall
 flake8 etf_screen tests
 ```
 
