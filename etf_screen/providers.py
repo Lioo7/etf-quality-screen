@@ -23,7 +23,7 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict
 
 from .cache import DiskCache
-from .screen import Company
+from .screen import AnnualPeriod, Company
 
 # Fields persisted to / restored from the disk cache.
 _COMPANY_FIELDS = (
@@ -31,7 +31,7 @@ _COMPANY_FIELDS = (
     "sbc_ttm", "diluted_shares_now", "diluted_shares_prior", "market_cap",
     "forward_pe", "forward_eps_growth", "net_income_ttm",
     "low_confidence", "name", "basis",
-    "sbc_assumed_zero", "overridden_fields", "sector", "industry",
+    "sbc_assumed_zero", "overridden_fields", "sector", "industry", "history",
 )
 
 
@@ -74,20 +74,81 @@ class MockProvider(DataProvider):
     name = "mock"
 
     #: A tiny, hand-built universe mirroring the acceptance-test archetypes.
+    #: The synthetic DURABLE/DECEL/NEWLY/BURN names exercise every consistency
+    #: gate branch in a ``--provider mock --consistency-years 3`` run.
     DATA: dict[str, Company] = {
         "MSFT": Company("MSFT", 245000, 212000, 118000, 28000, 10000,
                         7430, 7450, 3100000, 32.0, 14.0, 88000,
                         name="Microsoft Corporation", basis="TTM",
-                        sector="Technology", industry="Software—Infrastructure"),
+                        sector="Technology", industry="Software—Infrastructure",
+                        history=[
+                            AnnualPeriod("2021", 168000, 77000, 21000, 6000),
+                            AnnualPeriod("2022", 198000, 89000, 24000, 7500),
+                            AnnualPeriod("2023", 212000, 102000, 26000, 9000),
+                            AnnualPeriod("2024", 245000, 118000, 28000, 10000),
+                        ]),
         "GOOGL": Company("GOOGL", 328000, 283000, 110000, 32000, 22000,
                          12200, 12500, 2100000, 21.0, 16.0, 74000,
                          name="Alphabet Inc.", basis="TTM",
                          sector="Communication Services",
-                         industry="Internet Content & Information"),
+                         industry="Internet Content & Information",
+                         history=[
+                             AnnualPeriod("2021", 257000, 91000, 24000, 16000),
+                             AnnualPeriod("2022", 283000, 99000, 31000, 19000),
+                             AnnualPeriod("2023", 307000, 102000, 32000, 20000),
+                             AnnualPeriod("2024", 328000, 110000, 32000, 22000),
+                         ]),
+        # Passes snapshot Track B; clears the gate (adj FCF > 0 every year).
         "CRWD": Company("CRWD", 3500, 2400, 1100, 120, 500, 245, 235,
                         80000, None, 30.0, -150,
                         name="CrowdStrike Holdings, Inc.", basis="TTM",
-                        sector="Technology", industry="Software—Infrastructure"),
+                        sector="Technology", industry="Software—Infrastructure",
+                        history=[
+                            AnnualPeriod("2022", 1600, 500, 60, 250),
+                            AnnualPeriod("2023", 2400, 800, 90, 380),
+                            AnnualPeriod("2024", 3500, 1100, 120, 500),
+                        ]),
+        # Passes snapshot Track A; clears the gate (Rule40 >= 40 every year).
+        "DURABLE": Company("DURABLE", 1000, 700, 400, 50, 50, 1000, 1000,
+                           5000, 30.0, 20.0, 200,
+                           name="Durable Compounder Inc.", basis="TTM",
+                           sector="Technology", industry="Software—Application",
+                           history=[
+                               AnnualPeriod("2021", 500, 200, 25, 25),
+                               AnnualPeriod("2022", 650, 260, 30, 30),
+                               AnnualPeriod("2023", 845, 340, 40, 40),
+                               AnnualPeriod("2024", 1100, 440, 50, 50),
+                           ]),
+        # Passes snapshot Track A but a windowed year decelerates < 40 -> FAIL.
+        "DECEL": Company("DECEL", 1000, 700, 400, 50, 50, 1000, 1000,
+                         5000, 30.0, 20.0, 200,
+                         name="Decelerator Corp.", basis="TTM",
+                         sector="Technology", industry="Software—Application",
+                         history=[
+                             AnnualPeriod("2021", 600, 240, 30, 30),
+                             AnnualPeriod("2022", 630, 240, 30, 30),
+                             AnnualPeriod("2023", 800, 320, 40, 40),
+                             AnnualPeriod("2024", 1000, 400, 50, 50),
+                         ]),
+        # Passes snapshot Track A but only 2 annual years -> INSUFFICIENT_HISTORY.
+        "NEWLY": Company("NEWLY", 1000, 700, 400, 50, 50, 1000, 1000,
+                         5000, 30.0, 20.0, 200,
+                         name="Newly Public Inc.", basis="TTM",
+                         sector="Technology", industry="Software—Application",
+                         history=[
+                             AnnualPeriod("2023", 770, 310, 40, 40),
+                             AnnualPeriod("2024", 1000, 400, 50, 50),
+                         ]),
+        # Passes snapshot Track B but an early year had adj FCF <= 0 -> FAIL.
+        "BURN": Company("BURN", 3500, 2400, 1100, 120, 500, 245, 235,
+                        70000, None, 30.0, -150,
+                        name="Cash Burner Ltd.", basis="TTM",
+                        sector="Technology", industry="Software—Infrastructure",
+                        history=[
+                            AnnualPeriod("2022", 1600, 200, 50, 250),
+                            AnnualPeriod("2023", 2400, 600, 80, 300),
+                            AnnualPeriod("2024", 3500, 1100, 120, 500),
+                        ]),
     }
 
     def _fetch_uncached(self, ticker: str) -> Company:
@@ -255,6 +316,7 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info) -> Company:
         low_confidence=low_conf,
         name=name, basis=basis, sbc_assumed_zero=sbc_assumed_zero,
         sector=sector, industry=industry,
+        history=_annual_history(a_inc, a_cf),
     )
 
 
@@ -287,6 +349,66 @@ def _isnan(v) -> bool:
         return v != v  # NaN is the only value not equal to itself
     except Exception:  # pragma: no cover
         return False
+
+
+def _labeled_row(df, labels) -> dict:
+    """Map each period-end column -> value for the first matching label (finite only).
+
+    Unlike :func:`_row`, this keeps the column labels so callers can align line
+    items across the income and cash-flow frames by fiscal year.
+    """
+    if df is None:
+        return {}
+    for label in labels:
+        if label in df.index:
+            out = {}
+            for col in df.columns:
+                v = df.loc[label, col]
+                if v is not None and not _isnan(v):
+                    out[col] = float(v)
+            return out
+    return {}
+
+
+def _fiscal_label(col) -> str:
+    """Human-readable year label for a period-end column (a Timestamp or string)."""
+    year = getattr(col, "year", None)
+    return str(year) if year is not None else str(col)[:10]
+
+
+def _annual_history(a_inc, a_cf) -> list:
+    """Build a contiguous run of COMPLETE annual periods, oldest -> newest.
+
+    Revenue comes from the income frame; OCF/capex/SBC from the cash-flow frame —
+    aligned by fiscal-year column. Walking newest -> oldest, leading incomplete
+    years (e.g. cash flow not yet filed) are skipped, then the run starts at the
+    most recent complete year and TRUNCATES at the first backward gap. A skipped
+    middle year would misalign growth, so we stop rather than skip. Lines are
+    never fabricated or zero-filled — a missing line just ends the history.
+    """
+    if a_inc is None or a_cf is None:
+        return []
+    rev = _labeled_row(a_inc, _REV)
+    ocf = _labeled_row(a_cf, _OCF)
+    capex = _labeled_row(a_cf, _CAPEX)
+    sbc = _labeled_row(a_cf, _SBC)
+    cols = sorted(set(a_inc.columns) | set(a_cf.columns), reverse=True)
+    periods: list[AnnualPeriod] = []
+    started = False
+    for col in cols:
+        complete = col in rev and col in ocf and col in capex and col in sbc
+        if complete:
+            started = True
+            periods.append(AnnualPeriod(
+                fiscal_label=_fiscal_label(col),
+                revenue=rev[col], ocf=ocf[col],
+                capex=abs(capex[col]), sbc=sbc[col],
+            ))
+        elif started:
+            break  # first backward gap after the run begins -> truncate
+        # else: leading incomplete year -> skip and keep looking for the run start
+    periods.reverse()  # oldest -> newest
+    return periods
 
 
 def _info(tk) -> dict:
@@ -381,6 +503,10 @@ class FMPProvider(DataProvider):
             if ttm_eps and ttm_eps > 0:
                 forward_eps_growth = (fwd_eps / ttm_eps - 1) * 100
 
+        # Annual history for the consistency gate (best-effort; never blocks a name).
+        inc_a = self._get(f"income-statement/{ticker}", period="annual", limit=5)
+        cf_a = self._get(f"cash-flow-statement/{ticker}", period="annual", limit=5)
+
         return Company(
             ticker=ticker, revenue_ttm=revenue_ttm, revenue_ttm_prior=revenue_prior,
             ocf_ttm=ocf, capex_ttm=capex, sbc_ttm=sbc,
@@ -390,7 +516,43 @@ class FMPProvider(DataProvider):
             low_confidence=low_conf,
             name=name, basis="TTM", sbc_assumed_zero=not sbc_found,
             sector=sector, industry=industry,
+            history=_fmp_annual_history(inc_a, cf_a),
         )
+
+
+def _fmp_annual_history(inc_a: list[dict], cf_a: list[dict]) -> list[AnnualPeriod]:
+    """Contiguous run of complete annual periods from FMP statements, oldest -> newest.
+
+    Income and cash-flow records are aligned by ``calendarYear``; walking newest
+    -> oldest, the run truncates at the first year missing any required line (never
+    skipping a middle year, which would misalign growth). No line is zero-filled.
+    """
+    cf_by_year = {q.get("calendarYear"): q for q in cf_a}
+    periods: list[AnnualPeriod] = []
+    started = False
+    for q in inc_a:  # FMP returns most-recent first
+        year = q.get("calendarYear")
+        cq = cf_by_year.get(year)
+        rev = q.get("revenue")
+        complete = (
+            cq is not None and rev is not None
+            and cq.get("operatingCashFlow") is not None
+            and cq.get("capitalExpenditure") is not None
+            and cq.get("stockBasedCompensation") is not None
+        )
+        if complete:
+            started = True
+            periods.append(AnnualPeriod(
+                fiscal_label=str(year),
+                revenue=float(rev),
+                ocf=float(cq["operatingCashFlow"]),
+                capex=abs(float(cq["capitalExpenditure"])),
+                sbc=float(cq["stockBasedCompensation"]),
+            ))
+        elif started:
+            break  # first backward gap -> truncate
+    periods.reverse()  # oldest -> newest
+    return periods
 
 
 def _nearest_future_eps(estimates: list[dict]) -> float | None:

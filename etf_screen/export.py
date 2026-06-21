@@ -21,7 +21,7 @@ from .screen import Result
 COLUMNS = [
     "ticker", "name", "sector", "track", "passed", "growth_pct",
     "adj_fcf_margin_pct", "rule40", "p_s", "ps_guardrail", "dilution_pct",
-    "sbc_pct", "peg", "net_income_ttm",
+    "sbc_pct", "peg", "net_income_ttm", "rule40_hist", "consistency",
     "sector_med_rule40", "sector_med_ps", "sector_med_peg",
     "basis", "sbc_assumed_zero", "manual_override", "reason", "low_confidence",
 ]
@@ -57,6 +57,21 @@ def _sector_med(r: Result, metric: str) -> str:
     return _num(ctx.medians[metric])
 
 
+def rule40_hist(r: Result) -> str:
+    """The Rule-of-40 trajectory ``[55.1 -> 42.0 -> 40.5]`` (oldest -> newest).
+
+    Blank when the consistency gate did not run or yielded no windowed years.
+    """
+    if r.consistency is None or not r.consistency.rule40_by_year:
+        return ""
+    return "[" + " -> ".join(f"{v:.1f}" for _, v in r.consistency.rule40_by_year) + "]"
+
+
+def consistency_status(r: Result) -> str:
+    """PASS / FAIL / INSUFFICIENT, or ``—`` when the gate did not run."""
+    return r.consistency.status.name if r.consistency is not None else "—"
+
+
 def _result_row(r: Result) -> dict:
     return {
         "ticker": r.ticker, "name": r.name, "sector": r.sector, "track": r.track,
@@ -65,6 +80,7 @@ def _result_row(r: Result) -> dict:
         "p_s": _num(r.p_s), "ps_guardrail": _num(r.ps_guardrail),
         "dilution_pct": _num(r.dilution), "sbc_pct": _num(r.sbc_pct),
         "peg": _num(r.peg), "net_income_ttm": _num(r.company.net_income_ttm),
+        "rule40_hist": rule40_hist(r), "consistency": consistency_status(r),
         "sector_med_rule40": _sector_med(r, "rule40"),
         "sector_med_ps": _sector_med(r, "p_s"), "sector_med_peg": _sector_med(r, "peg"),
         "basis": r.basis,

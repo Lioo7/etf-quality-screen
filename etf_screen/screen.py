@@ -16,6 +16,7 @@ irrelevant to routing.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum, auto
 from math import isnan, nan
 from statistics import median
 
@@ -38,6 +39,21 @@ def pct(part: float, whole: float) -> float:
     "could not evaluate" and skip the name rather than crashing.
     """
     return (part / whole) * 100 if whole else nan
+
+
+@dataclass
+class AnnualPeriod:
+    """One fiscal year of RAW statement lines ($millions), for the consistency gate.
+
+    Raw lines only — never pre-computed ratios — so the per-year math runs through
+    the same :func:`_period_metrics` helper as the live snapshot, with zero drift.
+    """
+
+    fiscal_label: str           # human-readable year label, e.g. "2023"
+    revenue: float
+    ocf: float                  # operating cash flow
+    capex: float                # capital expenditure (positive magnitude)
+    sbc: float                  # stock-based compensation
 
 
 @dataclass
@@ -69,6 +85,9 @@ class Company:
     overridden_fields: list[str] = field(default_factory=list)  # from overrides.json
     sector: str = "Unknown"     # GICS-style sector bucket from the data layer
     industry: str = ""          # finer sub-sector (optional)
+    # Annual statement history (OLDEST -> NEWEST) for the multi-year consistency
+    # gate. Empty when the data layer could not source a contiguous run.
+    history: list[AnnualPeriod] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # Coerce Nones (e.g. from older cache entries) and default name to ticker.
@@ -78,6 +97,15 @@ class Company:
             self.overridden_fields = []
         if not self.name:
             self.name = self.ticker
+        # Cache load passes history back as a list of plain dicts (asdict round-trip);
+        # coerce them into AnnualPeriod so equality and the gate see real records.
+        if self.history is None:
+            self.history = []
+        else:
+            self.history = [
+                p if isinstance(p, AnnualPeriod) else AnnualPeriod(**p)
+                for p in self.history
+            ]
 
     @property
     def manual_override(self) -> bool:
@@ -120,6 +148,12 @@ class Result:
     reasons: list[str]       # rejection reasons (empty if passed)
     evaluable: bool          # False when a divide-by-zero guard tripped
 
+    # Multi-year consistency gate (None when the gate did not run). ``insufficient
+    # history`` is True ONLY for a snapshot qualifier demoted for lacking history —
+    # a snapshot-failing name is a normal rejection and never lands in that bucket.
+    consistency: "ConsistencyResult | None" = None
+    insufficient_history: bool = False
+
     # Informational sector annotation, attached post-hoc by
     # :func:`annotate_sector_context`. NEVER read by :func:`evaluate` or the
     # default ranking — it cannot change passed / track / rank.
@@ -160,16 +194,34 @@ class Result:
         return PS_GUARDRAIL_FACTOR * self.growth - self.p_s
 
 
-def evaluate(c: Company) -> Result:
+def _period_metrics(
+    revenue: float, revenue_prior: float, ocf: float, capex: float, sbc: float,
+) -> tuple[float, float, float, float]:
+    """Return ``(growth, adj_fcf, adj_margin, rule40)`` for one period.
+
+    The single source of truth for the per-period math, shared by the live
+    snapshot in :func:`evaluate` and the historical years in the consistency
+    gate so there is zero methodology drift between them.
+    """
+    growth = pct(revenue - revenue_prior, revenue_prior)
+    adj_fcf = ocf - capex - sbc
+    adj_margin = pct(adj_fcf, revenue)
+    rule40 = growth + adj_margin
+    return growth, adj_fcf, adj_margin, rule40
+
+
+def evaluate(c: Company, consistency_years: int = 0) -> Result:
     """Apply the screen to one company and return a fully populated Result.
 
-    Mirrors the authoritative reference implementation exactly.
+    Mirrors the authoritative reference implementation exactly. When
+    ``consistency_years`` is 0 (the default) the multi-year gate is bypassed and
+    behaviour is identical to the snapshot-only screen; a positive value layers
+    the track-aware annual durability gate on top of a snapshot qualifier.
     """
-    growth = pct(c.revenue_ttm - c.revenue_ttm_prior, c.revenue_ttm_prior)
+    growth, adj_fcf, adj_margin, rule40 = _period_metrics(
+        c.revenue_ttm, c.revenue_ttm_prior, c.ocf_ttm, c.capex_ttm, c.sbc_ttm
+    )
     fcf = c.ocf_ttm - c.capex_ttm
-    adj_fcf = fcf - c.sbc_ttm
-    adj_margin = pct(adj_fcf, c.revenue_ttm)
-    rule40 = growth + adj_margin
     p_s = c.market_cap / c.revenue_ttm if c.revenue_ttm else nan
     sbc_pct = pct(c.sbc_ttm, c.revenue_ttm)
     dilution = pct(c.diluted_shares_now - c.diluted_shares_prior, c.diluted_shares_prior)
@@ -222,6 +274,28 @@ def evaluate(c: Company) -> Result:
             sbc_pct, rule40, p_s, growth, peg,
         )
 
+    # Multi-year consistency gate — layered ONLY on a snapshot qualifier. A name
+    # that already failed the snapshot is a normal rejection; its history is moot.
+    consistency: ConsistencyResult | None = None
+    insufficient_history = False
+    if consistency_years > 0 and passed:
+        consistency = (
+            track_a_consistency(c.history, consistency_years) if track_a
+            else track_b_consistency(c.history, consistency_years)
+        )
+        if consistency.status is ConsistencyStatus.FAIL:
+            passed = False
+            track = "—"
+            reasons = [_consistency_fail_reason(consistency, track_a, consistency_years)]
+        elif consistency.status is ConsistencyStatus.INSUFFICIENT:
+            passed = False
+            track = "—"
+            insufficient_history = True
+            reasons = [
+                f"insufficient annual history "
+                f"({consistency.years_available} of {consistency.years_required} yrs)"
+            ]
+
     return Result(
         company=c,
         growth=growth, fcf=fcf, adj_fcf=adj_fcf, adj_margin=adj_margin,
@@ -230,6 +304,7 @@ def evaluate(c: Company) -> Result:
         pass_peg=pass_peg, quality_gate=quality_gate,
         track_a=track_a, track_b=track_b, passed=passed,
         track=track, reasons=reasons, evaluable=evaluable,
+        consistency=consistency, insufficient_history=insufficient_history,
     )
 
 
@@ -268,6 +343,129 @@ def _rejection_reasons(
         # Unprofitable -> Track B only; rejection comes from the quality gate.
         reasons.append("fails Track B quality gate (adj FCF<=0 or dilution>=growth)")
     return reasons or ["did not clear either track"]
+
+
+# ---------------------------------------------------------------------------
+# Multi-year consistency gate (annual durability filter) — pure, no IO
+# ---------------------------------------------------------------------------
+class ConsistencyStatus(Enum):
+    """Outcome of the multi-year consistency gate for a snapshot qualifier."""
+
+    PASS = auto()
+    FAIL = auto()
+    INSUFFICIENT = auto()
+
+
+@dataclass
+class ConsistencyResult:
+    """Verdict + trajectory of the consistency gate, for reporting and audit.
+
+    The trajectory lists are informational (oldest -> newest); the gate itself
+    stays binary. ``rule40_by_year`` / ``adj_fcf_by_year`` drive the report's
+    deceleration-audit column and the rejection-reason string.
+    """
+
+    status: ConsistencyStatus
+    years_required: int
+    years_available: int
+    rule40_by_year: list[tuple[str, float]] = field(default_factory=list)
+    adj_fcf_by_year: list[tuple[str, float]] = field(default_factory=list)
+    note: str = ""
+
+
+def track_a_consistency(history: list[AnnualPeriod], years: int) -> ConsistencyResult:
+    """Track A durability: Rule of 40 >= threshold in EVERY year of the window.
+
+    A windowed year's Rule of 40 needs its prior year's revenue, so ``years``
+    rule40 values require ``years + 1`` contiguous complete annual periods.
+    Too few -> INSUFFICIENT. A NaN in the window is a data gap (not a genuine
+    fail) -> INSUFFICIENT. Otherwise all >= :data:`RULE40_MIN` -> PASS else FAIL.
+    """
+    required = years + 1
+    if len(history) < required:
+        return ConsistencyResult(
+            ConsistencyStatus.INSUFFICIENT, required, len(history),
+            note="need one extra year for the oldest growth rate",
+        )
+    # The window is the most recent ``years`` periods, each paired with its prior.
+    rule40_by_year: list[tuple[str, float]] = []
+    for i in range(len(history) - years, len(history)):
+        cur, prior = history[i], history[i - 1]
+        _, _, _, rule40 = _period_metrics(
+            cur.revenue, prior.revenue, cur.ocf, cur.capex, cur.sbc
+        )
+        rule40_by_year.append((cur.fiscal_label, rule40))
+    if any(isnan(v) for _, v in rule40_by_year):
+        return ConsistencyResult(
+            ConsistencyStatus.INSUFFICIENT, required, len(history),
+            rule40_by_year=rule40_by_year, note="data gap (NaN) in window",
+        )
+    status = (
+        ConsistencyStatus.PASS
+        if all(v >= RULE40_MIN for _, v in rule40_by_year)
+        else ConsistencyStatus.FAIL
+    )
+    return ConsistencyResult(
+        status, required, len(history), rule40_by_year=rule40_by_year
+    )
+
+
+def track_b_consistency(history: list[AnnualPeriod], years: int) -> ConsistencyResult:
+    """Track B durability: adjusted FCF > 0 in EVERY available year of the window.
+
+    Effective floor is ``min(2, years)`` available annual periods. Fewer ->
+    INSUFFICIENT. Otherwise adj FCF (ocf - capex - sbc) must be > 0 every year ->
+    PASS else FAIL. The Rule-of-40 trajectory is filled where a prior year exists
+    (display only); the gate keys solely on adjusted FCF.
+    """
+    floor = min(2, years)
+    window = history[-years:] if years else []
+    if len(window) < floor:
+        return ConsistencyResult(
+            ConsistencyStatus.INSUFFICIENT, floor, len(window),
+            note=f"need at least {floor} annual years of adjusted FCF",
+        )
+    adj_fcf_by_year = [(p.fiscal_label, p.ocf - p.capex - p.sbc) for p in window]
+    # Rule-of-40 trajectory for the window, where a prior year is available.
+    start = len(history) - len(window)
+    rule40_by_year: list[tuple[str, float]] = []
+    for i in range(start, len(history)):
+        if i == 0:
+            continue  # no prior year for a growth rate
+        cur, prior = history[i], history[i - 1]
+        _, _, _, rule40 = _period_metrics(
+            cur.revenue, prior.revenue, cur.ocf, cur.capex, cur.sbc
+        )
+        rule40_by_year.append((cur.fiscal_label, rule40))
+    status = (
+        ConsistencyStatus.PASS
+        if all(v > 0 for _, v in adj_fcf_by_year)
+        else ConsistencyStatus.FAIL
+    )
+    return ConsistencyResult(
+        status, floor, len(window),
+        rule40_by_year=rule40_by_year, adj_fcf_by_year=adj_fcf_by_year,
+    )
+
+
+def _fmt_trajectory(pairs: list[tuple[str, float]]) -> str:
+    """Render a ``(label, value)`` series as ``[55.1 -> 42.0 -> 40.5]`` (oldest first)."""
+    return "[" + " -> ".join(f"{v:.1f}" for _, v in pairs) + "]"
+
+
+def _consistency_fail_reason(
+    result: ConsistencyResult, track_a: bool, years: int,
+) -> str:
+    """The rejection-reason string for a name demoted by a FAILED consistency gate."""
+    if track_a:
+        return (
+            f"failed {years}-yr consistency gate "
+            f"(Rule40 Hist: {_fmt_trajectory(result.rule40_by_year)})"
+        )
+    return (
+        f"failed {years}-yr consistency gate "
+        f"(AdjFCF Hist: {_fmt_trajectory(result.adj_fcf_by_year)})"
+    )
 
 
 def rank(results: list[Result], mode: str = "rule40") -> list[Result]:

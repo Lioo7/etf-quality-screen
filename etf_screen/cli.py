@@ -68,6 +68,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--rank", choices=("rule40", "sector-relative"), default="rule40",
                    help="survivor ordering: absolute Rule of 40 (default) or "
                         "within-sector attractiveness (informational re-sort only)")
+    p.add_argument("--consistency-years", type=int, default=3,
+                   help="multi-year consistency gate window (default: 3); 0 bypasses "
+                        "the gate entirely for a snapshot-only baseline run")
     return p
 
 
@@ -97,18 +100,20 @@ def _make_provider(args) -> DataProvider:
         raise SystemExit(2)
 
 
-def _screen_one(provider, ticker, override) -> Result | Skipped:
+def _screen_one(provider, ticker, override, consistency_years=0) -> Result | Skipped:
     """Fetch + (optionally override) + evaluate one ticker, or report it skipped."""
     try:
         company = provider.fetch(ticker)
         if override:
             company = apply_override(company, override)
-        return evaluate(company)
+        return evaluate(company, consistency_years=consistency_years)
     except DataUnavailable as exc:
         if override:  # provider had nothing, but the user supplied verified data
             rescued = company_from_override(ticker, override)
             if rescued is not None:
-                return evaluate(rescued)
+                # An override-rescued name carries no annual history, so the gate
+                # will route it to INSUFFICIENT_HISTORY when enabled.
+                return evaluate(rescued, consistency_years=consistency_years)
         return Skipped(ticker, str(exc))
     except Exception as exc:  # unexpected provider/parse error -> report, skip
         return Skipped(ticker, f"unexpected error: {exc}")
@@ -128,7 +133,8 @@ def run(args) -> int:
     results: list[Result] = []
     skipped: list[Skipped] = []
     for i, ticker in enumerate(tickers):
-        outcome = _screen_one(provider, ticker, overrides.get(ticker))
+        outcome = _screen_one(provider, ticker, overrides.get(ticker),
+                              consistency_years=args.consistency_years)
         (skipped if isinstance(outcome, Skipped) else results).append(outcome)
         if args.throttle and i < len(tickers) - 1:
             time.sleep(args.throttle)
@@ -158,8 +164,13 @@ def _do_export(args, source, as_of, results, skipped, names, label) -> None:
 def _report(args, source, as_of, stale, tickers, results, skipped, names,
             sector_stats, label) -> None:
     survivors = rank(results, mode=args.rank)
-    rejected = [r for r in results if not r.passed]
+    # INSUFFICIENT_HISTORY names get their own section; keep them out of the
+    # ordinary rejection list (a failed-consistency name stays a normal reject).
+    insufficient = [r for r in results if r.insufficient_history]
+    rejected = [r for r in results if not r.passed and not r.insufficient_history]
     sbc_assumed = [r for r in results if r.sbc_assumed_zero]
+    gated_out = sum(1 for r in rejected
+                    if any("consistency gate" in reason for reason in r.reasons))
 
     # --- provenance header ---
     print("=" * 78)
@@ -178,6 +189,10 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
     print(f"  could not source: {len(skipped)}")
     print(f"  passed          : {len(survivors)}")
     print(f"  rejected        : {len(rejected)}")
+    if args.consistency_years:
+        print(f"  consistency gate: {gated_out} demoted, "
+              f"{len(insufficient)} insufficient history "
+              f"({args.consistency_years}-yr window)")
     print(f"  SBC assumed 0   : {len(sbc_assumed)} (review below)")
     print("  rejected by filter (names may fail more than one):")
     print(f"    Rule of 40    : {sum(1 for r in rejected if not r.pass_rule40)}")
@@ -193,10 +208,10 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
         rows = [[
             i + 1, r.ticker, _short(r.name), _short(r.sector, 20), r.track,
             _f(r.growth), _f(r.adj_margin), _f(r.rule40), _f(r.p_s, 1),
-            _f(r.dilution), _f(r.sbc_pct), _peg(r.peg),
+            _f(r.dilution), _f(r.sbc_pct), _peg(r.peg), export_mod.rule40_hist(r),
         ] for i, r in enumerate(survivors)]
         headers = ["#", "Ticker", "Company", "Sector", "Track", "Growth%",
-                   "AdjFCF%", "Rule40", "P/S", "Dil%", "SBC%", "PEG"]
+                   "AdjFCF%", "Rule40", "P/S", "Dil%", "SBC%", "PEG", "Rule40 Hist"]
         print(tabulate(rows, headers=headers, floatfmt=".1f"))
     else:
         print("  (empty — a strict screen producing no survivors is a valid result)")
@@ -227,6 +242,15 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
             verdict = r.track if r.passed else "rejected"
             print(f"  {r.ticker} ({_short(r.name)}): {verdict} "
                   f"(Rule40 {_f(r.rule40)}, SBC% shown as {_f(r.sbc_pct)})")
+
+    # --- insufficient history (cleared the snapshot, lacked annual history) ---
+    if insufficient:
+        print(f"\nINSUFFICIENT_HISTORY ({len(insufficient)}) — cleared the snapshot "
+              f"but lacked a long enough annual record for the consistency gate:")
+        for r in insufficient:
+            c = r.consistency
+            print(f"  {r.ticker} ({_short(r.name)}): "
+                  f"{c.years_available} of {c.years_required} yrs available")
 
     # --- could not source ---
     if skipped:

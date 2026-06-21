@@ -30,7 +30,9 @@ from .screen import Company
 
 DEFAULT_PATH = "overrides.json"
 
-# Fields a user may override / supply.
+# Fields a user may override / supply. Scalar snapshot lines only — annual
+# `history` is intentionally not overridable here, so an override-rescued name
+# carries no history and lands in INSUFFICIENT_HISTORY when the gate runs.
 _OVERRIDABLE = {
     "name", "revenue_ttm", "revenue_ttm_prior", "ocf_ttm", "capex_ttm",
     "sbc_ttm", "diluted_shares_now", "diluted_shares_prior", "market_cap",
