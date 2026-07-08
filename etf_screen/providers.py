@@ -171,6 +171,21 @@ class MockProvider(DataProvider):
                                          operating_income=440, total_debt=0,
                                          cash_and_equivalents=600, total_equity=2000),
                         ]),
+        # Clears snapshot Track A + every balance-sheet gate, but cumulative 3-yr
+        # net income (1200) badly outruns cumulative adjusted FCF (800, ratio
+        # 0.67 < 0.8) -- the classic "profits that never become cash" red flag.
+        "LEAKY": Company("LEAKY", 1000, 700, 400, 50, 50, 1000, 1000,
+                         5000, 30.0, 20.0, 200,
+                         total_debt=0, cash_and_equivalents=300, goodwill=0,
+                         total_assets=1500, operating_income=200, total_equity=1000,
+                         name="Leaky Earnings Corp.", basis="TTM",
+                         sector="Technology", industry="Software—Application",
+                         history=[
+                             AnnualPeriod("2021", 500, 200, 25, 25, net_income=400),
+                             AnnualPeriod("2022", 650, 260, 30, 30, net_income=400),
+                             AnnualPeriod("2023", 845, 340, 40, 40, net_income=400),
+                             AnnualPeriod("2024", 1100, 440, 50, 50, net_income=400),
+                         ]),
         # Passes snapshot Track A but a windowed year decelerates < 40 (strict FAIL).
         "DECEL": Company("DECEL", 1000, 700, 400, 50, 50, 1000, 1000,
                          5000, 30.0, 20.0, 200,

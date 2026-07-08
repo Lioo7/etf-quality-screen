@@ -40,6 +40,10 @@ ROIC_DURABLE_MIN = 0.15   # median ROIC bar for the durability annotation
 ROIC_DURABLE_YEARS = 5    # minimum years of usable data to claim durability
 ROIC_HISTORY_MIN_YEARS = 3  # below this, the median is flagged as noisy/thin
 
+# --- earnings quality (rejecting; balance-sheet-gate family) ----------------
+EARNINGS_QUALITY_WINDOW = 3    # cumulative window, years
+EARNINGS_QUALITY_MIN = 0.8     # cumulative adjusted FCF / cumulative net income floor
+
 # --- sector context (INFORMATIONAL ONLY — never gates a verdict) -----------
 SECTOR_MIN_PEERS = 5    # don't compute a sector median below this many peers
 # Result attributes whose per-sector median we report (adj_fcf_margin == adj_margin).
@@ -206,6 +210,12 @@ class Result:
     pass_goodwill: bool
     pass_roic: bool
     roic_applied: bool       # True only when ROIC was an active gate (Track A + strict)
+
+    # earnings-quality gate (cumulative adjusted-FCF / net-income; profitable names only)
+    pass_earnings_quality: bool         # True (never fails) when not applicable
+    earnings_quality_applicable: bool   # False when cumulative NI <= 0 or no usable years
+    earnings_quality_ratio: float | None
+    earnings_quality_years: int         # actual window used (< EARNINGS_QUALITY_WINDOW if thin)
 
     # verdict
     status: ScreenStatus
@@ -374,6 +384,11 @@ def evaluate(c: Company, consistency_years: int = 0,
     pass_roic = roic is None or roic >= ROIC_MIN
     roic_applied = track_a and consistency_mode == "strict"
 
+    # Earnings quality: cumulative adjusted-FCF / net-income over the trailing
+    # window. N/A (never fails) when not applicable (unprofitable cumulatively,
+    # or no net-income history); applies to any snapshot qualifier, either track.
+    eq_applicable, eq_ratio, eq_years, pass_earnings_quality = _earnings_quality(c.history)
+
     consistency: ConsistencyResult | None = None
     roic_hist: RoicHistory | None = None
 
@@ -395,6 +410,7 @@ def evaluate(c: Company, consistency_years: int = 0,
         bs_reasons = _balance_sheet_reasons(
             pass_leverage, pass_goodwill, roic_applied, pass_roic,
             net_debt, fcf, net_debt_to_fcf, goodwill_to_assets, roic,
+            eq_applicable, pass_earnings_quality, eq_ratio, eq_years,
         )
         if consistency_years > 0:
             consistency = (
@@ -437,6 +453,9 @@ def evaluate(c: Company, consistency_years: int = 0,
         pass_peg=pass_peg, quality_gate=quality_gate,
         pass_leverage=pass_leverage, pass_goodwill=pass_goodwill,
         pass_roic=pass_roic, roic_applied=roic_applied,
+        pass_earnings_quality=pass_earnings_quality,
+        earnings_quality_applicable=eq_applicable,
+        earnings_quality_ratio=eq_ratio, earnings_quality_years=eq_years,
         status=status, track_a=track_a, track_b=track_b,
         track=track, reasons=reasons, consistency=consistency,
         roic_history=roic_hist,
@@ -454,6 +473,8 @@ def _pre_revenue_result(c: Company) -> Result:
         pass_sbc=False, pass_rule40=False, pass_ps=False, pass_peg=False,
         quality_gate=False, pass_leverage=False, pass_goodwill=False,
         pass_roic=False, roic_applied=False,
+        pass_earnings_quality=False, earnings_quality_applicable=False,
+        earnings_quality_ratio=None, earnings_quality_years=0,
         status=ScreenStatus.PRE_REVENUE, track_a=False, track_b=False,
         track="—", reasons=["pre-revenue (revenue_ttm <= 0)"], consistency=None,
     )
@@ -463,11 +484,15 @@ def _balance_sheet_reasons(
     pass_leverage: bool, pass_goodwill: bool, roic_applied: bool, pass_roic: bool,
     net_debt: float, fcf: float, net_debt_to_fcf: float,
     goodwill_to_assets: float, roic: float | None,
+    eq_applicable: bool = False, pass_earnings_quality: bool = True,
+    eq_ratio: float | None = None, eq_years: int = 0,
 ) -> list[str]:
     """All failing balance-sheet-gate reasons for a snapshot qualifier (no short-circuit).
 
     ROIC contributes a reason only when it was an active gate (Track A + strict)
     AND a value was computable; a not-computable ROIC is advisory, never a fail.
+    Earnings quality contributes a reason only when applicable (cumulative net
+    income > 0 over the trailing window) AND it failed.
     """
     reasons: list[str] = []
     if not pass_leverage:
@@ -487,6 +512,11 @@ def _balance_sheet_reasons(
             )
     if roic_applied and roic is not None and not pass_roic:
         reasons.append(f"ROIC = {roic * 100:.1f}% (< {ROIC_MIN * 100:.0f}%)")
+    if eq_applicable and not pass_earnings_quality:
+        reasons.append(
+            f"earnings quality: cumulative {eq_years}-yr AdjFCF/NI = {eq_ratio:.2f} "
+            f"(< {EARNINGS_QUALITY_MIN:.1f})"
+        )
     return reasons
 
 
@@ -574,6 +604,35 @@ def roic_history(history: list[AnnualPeriod]) -> RoicHistory:
     durable = med >= ROIC_DURABLE_MIN and years_used >= ROIC_DURABLE_YEARS
     note = "insufficient ROIC history" if years_used < ROIC_HISTORY_MIN_YEARS else ""
     return RoicHistory(med, years_used, durable, note=note)
+
+
+# ---------------------------------------------------------------------------
+# Earnings-quality gate (rejecting; balance-sheet-gate family) — pure, no IO
+# ---------------------------------------------------------------------------
+def _earnings_quality(history: list[AnnualPeriod]) -> tuple[bool, float | None, int, bool]:
+    """Cumulative adjusted-FCF / net-income ratio over the last
+    :data:`EARNINGS_QUALITY_WINDOW` years — the classic accounting red flag for
+    profits that never become cash (aggressive revenue recognition, ballooning
+    receivables, capitalized costs). A single year is noisy from working-capital
+    swings, so this cumulates; :data:`EARNINGS_QUALITY_MIN` tolerates normal
+    timing noise while catching persistent accrual inflation.
+
+    Returns ``(applicable, ratio, years_used, passed)``. **N/A, never a fail**,
+    when no year in the window has a net-income figure, or cumulative net income
+    is <= 0 (Track B's own FCF gate already covers unprofitable names). Uses
+    only the years that actually carry a net-income figure — never fabricated —
+    so ``years_used`` can be less than the configured window.
+    """
+    window = [p for p in history[-EARNINGS_QUALITY_WINDOW:] if p.net_income is not None]
+    years_used = len(window)
+    if years_used == 0:
+        return False, None, 0, True
+    cum_ni = sum(p.net_income for p in window)
+    if cum_ni <= 0:
+        return False, None, years_used, True
+    cum_adj_fcf = sum(p.ocf - p.capex - p.sbc for p in window)
+    ratio = cum_adj_fcf / cum_ni
+    return True, ratio, years_used, ratio >= EARNINGS_QUALITY_MIN
 
 
 # ---------------------------------------------------------------------------

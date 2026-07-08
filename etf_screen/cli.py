@@ -207,6 +207,9 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
     print(f"    Leverage >3x  : {sum(1 for r in rejected if not r.pass_leverage)}")
     print(f"    Goodwill >40% : {sum(1 for r in rejected if not r.pass_goodwill)}")
     print(f"    ROIC <10%     : {sum(1 for r in rejected if r.roic_applied and not r.pass_roic)}")
+    eq_fails = sum(1 for r in rejected
+                   if r.earnings_quality_applicable and not r.pass_earnings_quality)
+    print(f"    Earnings qlty : {eq_fails}")
     if args.consistency_years:
         print(f"  consistency gate: {gated_out} demoted, "
               f"{len(insufficient)} insufficient history "
@@ -228,11 +231,12 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
             _f(r.growth), _f(r.adj_margin), _f(r.rule40), _f(r.p_s, 1),
             _f(r.dilution), _f(r.sbc_pct), _peg(r.peg),
             _f(r.net_debt_to_fcf, 1), _pct(r.goodwill_to_assets, 0), _pct(r.roic),
-            _roic_hist(r), export_mod.rule40_hist(r),
+            _roic_hist(r), _eq_ratio(r), export_mod.rule40_hist(r),
         ] for i, r in enumerate(survivors)]
         headers = ["#", "Ticker", "Company", "Sector", "Track", "Growth%",
                    "AdjFCF%", "Rule40", "P/S", "Dil%", "SBC%", "PEG",
-                   "NetDebt/FCF", "GW/Assets%", "ROIC%", "ROIC Med(y)", "Rule40 Hist"]
+                   "NetDebt/FCF", "GW/Assets%", "ROIC%", "ROIC Med(y)", "EQ(y)",
+                   "Rule40 Hist"]
         print(tabulate(rows, headers=headers, floatfmt=".1f"))
     else:
         print("  (empty — a strict screen producing no survivors is a valid result)")
@@ -375,6 +379,13 @@ def _roic_hist(r: Result) -> str:
     if rh is None or rh.median is None:
         return "N/A"
     return f"{rh.median * 100:.1f} ({rh.years_used}y)"
+
+
+def _eq_ratio(r: Result) -> str:
+    """Render the earnings-quality ratio, e.g. '1.25 (3y)'; N/A when not applicable."""
+    if not r.earnings_quality_applicable or r.earnings_quality_ratio is None:
+        return "N/A"
+    return f"{r.earnings_quality_ratio:.2f} ({r.earnings_quality_years}y)"
 
 
 def _short(s: str, n: int = 24) -> str:

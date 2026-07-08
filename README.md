@@ -69,6 +69,14 @@ rescue:
 - **ROIC** — pre-tax operating income ÷ invested capital ≥ 10%. Applied **only to
   a Track-A name under `strict` consistency mode**; advisory (never a failure)
   when it can't be computed.
+- **Earnings quality** — cumulative 3-year adjusted FCF ÷ cumulative 3-year net
+  income ≥ 0.8, for names with cumulative net income > 0 (either track).
+  Profits that never become cash are the classic accounting red flag —
+  aggressive revenue recognition, ballooning receivables, capitalized costs.
+  A single year is noisy from working-capital swings, so this cumulates over 3
+  years (fewer if that's all the history has, and the shorter basis is
+  reported); **N/A, never a fail**, when cumulative net income isn't positive
+  — Track B's own quality gate already covers unprofitable names.
 
 **Multi-year consistency gate.** Optional durability check over annual history
 (`--consistency-years N`, default 3) layered on a snapshot qualifier:
@@ -213,14 +221,15 @@ Phase-1 elimination counts
     Leverage >3x  : 0
     Goodwill >40% : 0
     ROIC <10%     : 0
+    Earnings qlty : 0
   consistency gate: 0 demoted, 0 insufficient history (3-yr window)
   ...
 
 Shortlist (1 names) — ranked by Rule of 40
 
-  #  Ticker  Company        Sector      Track    Growth%  AdjFCF%  Rule40   P/S  ...  NetDebt/FCF  GW/Assets%  ROIC%  ROIC Med(y)  Rule40 Hist
----  ------  -------------  ----------  -------  -------  -------  ------  ----  ---  -----------  ----------  -----  -----------  --------------
-  1  CRWD    CrowdStrike…   Technology  Track B     45.8     13.7    59.5  22.9  ...          0.0           2  -25.0  N/A          [63.8 -> 59.5]
+  #  Ticker  Company        Sector      Track    Growth%  AdjFCF%  Rule40   P/S  ...  NetDebt/FCF  GW/Assets%  ROIC%  ROIC Med(y)  EQ(y)  Rule40 Hist
+---  ------  -------------  ----------  -------  -------  -------  ------  ----  ---  -----------  ----------  -----  -----------  -----  --------------
+  1  CRWD    CrowdStrike…   Technology  Track B     45.8     13.7    59.5  22.9  ...          0.0           2  -25.0  N/A          N/A    [63.8 -> 59.5]
 
 Why survivors passed:
   CRWD (CrowdStrike Holdings,…): Track B (Rule40 59.5, P/S 22.9 vs guardrail 22.9, SBC 14.3%)
@@ -392,12 +401,13 @@ consult a qualified professional before any financial decision.
 ## Development
 
 ```bash
-pytest -q          # 96 tests: acceptance fixtures, edge cases, data layer,
+pytest -q          # 108 tests: acceptance fixtures, edge cases, data layer,
                    # basis consistency, SBC-assumed-0, overrides, export,
                    # sector context (incl. the verdicts-unchanged regression),
                    # the issuer-holdings-CSV loader, the multi-year consistency
                    # gate (strict + trend), the balance-sheet gates, the
-                   # pre-revenue firewall, and the ROIC-history annotation
+                   # pre-revenue firewall, the ROIC-history annotation, and the
+                   # earnings-quality gate
 flake8 etf_screen tests
 ```
 
