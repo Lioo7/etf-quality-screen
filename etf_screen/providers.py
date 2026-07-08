@@ -35,6 +35,7 @@ _COMPANY_FIELDS = (
     "operating_income", "total_equity", "goodwill_assumed_zero", "debt_assumed_zero",
     "low_confidence", "name", "basis",
     "sbc_assumed_zero", "overridden_fields", "sector", "industry", "ipo_date",
+    "current_price", "ath_price", "price_3mo_ago", "price_history_years",
     "history",
 )
 
@@ -109,11 +110,14 @@ class MockProvider(DataProvider):
                              AnnualPeriod("2024", 328000, 110000, 32000, 22000),
                          ]),
         # Passes snapshot Track B; clears the gate (adj FCF > 0 every year).
-        # GAAP-unprofitable (negative EBIT) -> ROIC gate bypassed.
+        # GAAP-unprofitable (negative EBIT) -> ROIC gate bypassed. Price profile
+        # is parabolic: +58% in 3 months, 5% off the ATH -> the HOT timing tag.
         "CRWD": Company("CRWD", 3500, 2400, 1100, 120, 500, 245, 235,
                         80000, None, 30.0, -150,
                         total_debt=700, cash_and_equivalents=3500, goodwill=150,
                         total_assets=6500, operating_income=-50, total_equity=3000,
+                        current_price=95.0, ath_price=100.0, price_3mo_ago=60.0,
+                        price_history_years=5.0,
                         name="CrowdStrike Holdings, Inc.", basis="TTM",
                         sector="Technology", industry="Software—Infrastructure",
                         history=[
@@ -129,6 +133,8 @@ class MockProvider(DataProvider):
                            5000, 30.0, 20.0, 200,
                            total_debt=0, cash_and_equivalents=300, goodwill=0,
                            total_assets=1500, operating_income=200, total_equity=1000,
+                           current_price=90.0, ath_price=100.0, price_3mo_ago=85.0,
+                           price_history_years=8.0,
                            name="Durable Compounder Inc.", basis="TTM",
                            sector="Technology", industry="Software—Application",
                            history=[
@@ -314,6 +320,14 @@ class YFinanceProvider(DataProvider):
         # Never-fabricate guard: the balance-sheet gates need a real snapshot.
         if q_bal is None and a_bal is None:
             raise DataUnavailable(f"{ticker}: balance sheet unavailable from yfinance")
+        # Split/dividend-adjusted closes for the informational entry-timing
+        # annotations. auto_adjust=True is deliberate: raw closes would make the
+        # ATH of any splitter meaningless. A failed price fetch never skips the
+        # name -- timing is informational, the fields just stay None (N/A).
+        try:
+            closes = tk.history(period="max", auto_adjust=True)["Close"]
+        except Exception:
+            closes = None
         return _extract_yf(
             ticker,
             q_inc=_df(tk, "quarterly_income_stmt", "quarterly_financials"),
@@ -321,7 +335,7 @@ class YFinanceProvider(DataProvider):
             q_cf=_df(tk, "quarterly_cashflow", "quarterly_cash_flow"),
             a_cf=_df(tk, "cashflow", "cash_flow"),
             info=_info(tk),
-            q_bal=q_bal, a_bal=a_bal,
+            q_bal=q_bal, a_bal=a_bal, closes=closes,
         )
 
 
@@ -352,7 +366,8 @@ _TOTAL_EQUITY = [
 _COGS = ["Cost Of Revenue", "Reconciled Cost Of Revenue"]
 
 
-def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info, q_bal=None, a_bal=None) -> Company:
+def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
+                q_bal=None, a_bal=None, closes=None) -> Company:
     """Build a Company from Yahoo statement frames, on a single consistent basis.
 
     Factored out of the provider (no network here) so the basis-selection and
@@ -491,6 +506,12 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info, q_bal=None, a_bal=None) 
     if ipo_date is None:
         low_conf.append("first trading date unknown - IPO seasoning not checked")
 
+    # Adjusted-close snapshot for the entry-timing annotations (informational).
+    current_price, ath_price, price_3mo_ago, price_history_years = (
+        _extract_price_history(closes, date.today()))
+    if current_price is None:
+        low_conf.append("price history unavailable - entry timing not computed")
+
     return Company(
         ticker=ticker, revenue_ttm=revenue_ttm, revenue_ttm_prior=revenue_prior,
         ocf_ttm=ocf, capex_ttm=capex, sbc_ttm=sbc,
@@ -505,8 +526,34 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info, q_bal=None, a_bal=None) 
         low_confidence=low_conf,
         name=name, basis=basis, sbc_assumed_zero=sbc_assumed_zero,
         sector=sector, industry=industry, ipo_date=ipo_date,
+        current_price=current_price, ath_price=ath_price,
+        price_3mo_ago=price_3mo_ago, price_history_years=price_history_years,
         history=_annual_history(a_inc, a_cf, a_bal),
     )
+
+
+def _extract_price_history(closes, today: date):
+    """``(current, ath, three_months_ago, span_years)`` from an adjusted-close series.
+
+    Pure (no network) so it is unit-testable with a hand-built pandas Series.
+    ``closes`` is indexed by trading day, oldest -> newest. The 3-months-ago
+    price is the last close on/before ``today - 90d`` — None when the listing is
+    younger than that (a young listing genuinely has no 3-month return, so it is
+    reported as N/A, not zero). ``span_years`` records how much history the ATH
+    actually covers, so "ATH" over a short window is never mistaken for a
+    life-of-listing high. All None when the series is missing/empty.
+    """
+    if closes is None or len(closes) == 0:
+        return None, None, None, None
+    days = [getattr(idx, "date", lambda: idx)() for idx in closes.index]
+    values = [float(v) for v in closes]
+    current = values[-1]
+    ath = max(values)
+    cutoff = today - timedelta(days=90)
+    past = [v for d, v in zip(days, values) if d <= cutoff]
+    price_3mo_ago = past[-1] if past else None
+    span_years = (days[-1] - days[0]).days / 365.25
+    return current, ath, price_3mo_ago, span_years
 
 
 def _yf_first_trade_date(info: dict) -> str | None:

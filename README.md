@@ -123,6 +123,18 @@ over ≥ 5 usable years earns the `roic_durable` tag — evidence of a moat wide
 enough to survive one bad year, not a rounding error. This is purely
 informational: it never changes `passed`, `track`, or ranking.
 
+**Entry timing (informational).** The screen answers "what is worth owning" —
+deliberately not "when to buy". But the downstream workflow applies an
+anti-FOMO entry rule, so each name carries two timing columns from
+**split/dividend-adjusted** price history (yfinance `history(period="max",
+auto_adjust=True)` closes — raw closes would make any splitter's ATH
+meaningless): distance from the all-time high (`ATH%`) and the trailing
+3-month total return (`3M%`). A 3-month return above **+50%** while within
+**20% of the ATH** earns the `HOT` tag — a *patience* case, never a rejection.
+Listings younger than 3 months show `N/A` (no return exists, none is invented),
+and the export records how many years of history the ATH actually covers.
+**Strictly informational — never affects pass/fail, tracks, or ranking.**
+
 Survivors are ranked by Rule of 40 (desc), tie-broken by PEG (asc), then P/S
 headroom.
 
@@ -422,14 +434,15 @@ consult a qualified professional before any financial decision.
 ## Development
 
 ```bash
-pytest -q          # 130 tests: acceptance fixtures, edge cases, data layer,
+pytest -q          # 139 tests: acceptance fixtures, edge cases, data layer,
                    # basis consistency, SBC-assumed-0, overrides, export,
                    # sector context (incl. the verdicts-unchanged regression),
                    # the issuer-holdings-CSV loader, the multi-year consistency
                    # gate (strict + trend), the balance-sheet gates, the
                    # pre-revenue firewall, the ROIC-history annotation, the
-                   # earnings-quality gate, the gross-margin annotation, and
-                   # the RECENT_IPO seasoning classification
+                   # earnings-quality gate, the gross-margin annotation, the
+                   # RECENT_IPO seasoning classification, and the entry-timing
+                   # annotations
 flake8 etf_screen tests
 ```
 

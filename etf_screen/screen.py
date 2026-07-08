@@ -54,6 +54,10 @@ PRICING_POWER_MIN_YEARS = 5       # minimum usable years to claim pricing power
 # --- IPO seasoning (classification; keeps unseasoned listings off the shortlist) ---
 IPO_SEASONING_MONTHS = 12   # default; CLI-configurable via --ipo-seasoning-months
 
+# --- entry timing (INFORMATIONAL ONLY — never touches verdicts or ranking) --
+HOT_3MO_RETURN_MIN = 50.0    # 3-month total return above this is parabolic
+HOT_ATH_PROXIMITY_PCT = 20.0  # ... and within this % of the all-time high -> HOT
+
 # --- sector context (INFORMATIONAL ONLY — never gates a verdict) -----------
 SECTOR_MIN_PEERS = 5    # don't compute a sector median below this many peers
 # Result attributes whose per-sector median we report (adj_fcf_margin == adj_margin).
@@ -157,6 +161,14 @@ class Company:
     # First trading date, ISO "YYYY-MM-DD". None = unknown (never guessed): the
     # name is screened normally and flagged ipo_date_unknown, NOT classified.
     ipo_date: str | None = None
+    # Split/dividend-adjusted price snapshot for the ENTRY-TIMING annotations
+    # (informational only — never read by any gate). None = price history was
+    # unavailable (or, for price_3mo_ago, the listing is younger than 3 months);
+    # the annotations render N/A rather than fabricating a level.
+    current_price: float | None = None   # last adjusted close
+    ath_price: float | None = None       # all-time-high adjusted close
+    price_3mo_ago: float | None = None   # adjusted close ~3 months back
+    price_history_years: float | None = None  # span the ATH window actually covers
     # Annual statement history (OLDEST -> NEWEST) for the multi-year consistency
     # gate. Empty when the data layer could not source a contiguous run.
     history: list[AnnualPeriod] = field(default_factory=list)
@@ -230,6 +242,12 @@ class Result:
     earnings_quality_applicable: bool   # False when cumulative NI <= 0 or no usable years
     earnings_quality_ratio: float | None
     earnings_quality_years: int         # actual window used (< EARNINGS_QUALITY_WINDOW if thin)
+
+    # entry-timing annotations (INFORMATIONAL ONLY — the screen answers "what is
+    # worth owning", not "when to buy"; these never touch verdicts or ranking)
+    pct_off_ath: float | None           # distance from all-time high, % (<= 0 typically)
+    three_month_return: float | None    # trailing 3-month total return, % (None: young/no data)
+    hot: bool                           # 3-mo return > +50% AND within 20% of ATH
 
     # verdict
     status: ScreenStatus
@@ -424,6 +442,10 @@ def evaluate(c: Company, consistency_years: int = 0,
     # or no net-income history); applies to any snapshot qualifier, either track.
     eq_applicable, eq_ratio, eq_years, pass_earnings_quality = _earnings_quality(c.history)
 
+    # Entry timing (informational): % off ATH, 3-month return, and the HOT flag
+    # for the downstream anti-FOMO entry rule. Never feeds a gate or the rank.
+    pct_off_ath, three_month_return, hot = _entry_timing(c)
+
     consistency: ConsistencyResult | None = None
     roic_hist: RoicHistory | None = None
     margin_prof: MarginProfile | None = None
@@ -504,10 +526,38 @@ def evaluate(c: Company, consistency_years: int = 0,
         pass_earnings_quality=pass_earnings_quality,
         earnings_quality_applicable=eq_applicable,
         earnings_quality_ratio=eq_ratio, earnings_quality_years=eq_years,
+        pct_off_ath=pct_off_ath, three_month_return=three_month_return, hot=hot,
         status=status, track_a=track_a, track_b=track_b,
         track=track, reasons=reasons, consistency=consistency,
         roic_history=roic_hist, margin_profile=margin_prof,
     )
+
+
+def _entry_timing(c: Company) -> tuple[float | None, float | None, bool]:
+    """``(pct_off_ath, three_month_return, hot)`` from the adjusted price snapshot.
+
+    The screen answers "what is worth owning", deliberately not "when to buy" —
+    but the downstream human workflow applies an anti-FOMO entry rule (no initial
+    buy into a parabolic move near highs), and checking that mechanically for
+    every survivor is exactly what a tool should absorb. HOT = trailing 3-month
+    return > +50% AND price within 20% of the all-time high; it marks a
+    *patience* case, never a rejection. Missing prices -> None (rendered N/A),
+    never a fabricated level; a listing younger than 3 months has no 3-month
+    return by construction.
+    """
+    pct_off_ath = (
+        pct(c.current_price - c.ath_price, c.ath_price)
+        if c.current_price is not None and c.ath_price else None
+    )
+    three_month_return = (
+        pct(c.current_price - c.price_3mo_ago, c.price_3mo_ago)
+        if c.current_price is not None and c.price_3mo_ago else None
+    )
+    hot = (
+        three_month_return is not None and three_month_return > HOT_3MO_RETURN_MIN
+        and pct_off_ath is not None and pct_off_ath >= -HOT_ATH_PROXIMITY_PCT
+    )
+    return pct_off_ath, three_month_return, hot
 
 
 def _months_before(today: date, months: int) -> date:
@@ -548,6 +598,7 @@ def _pre_revenue_result(c: Company) -> Result:
         pass_roic=False, roic_applied=False,
         pass_earnings_quality=False, earnings_quality_applicable=False,
         earnings_quality_ratio=None, earnings_quality_years=0,
+        pct_off_ath=None, three_month_return=None, hot=False,
         status=ScreenStatus.PRE_REVENUE, track_a=False, track_b=False,
         track="—", reasons=["pre-revenue (revenue_ttm <= 0)"], consistency=None,
     )
