@@ -32,6 +32,7 @@ def test_ttm_basis_used_when_full_year_available():
     q_inc = _frame({
         "Total Revenue": [100] * 8,
         "Diluted Average Shares": [10] * 8,
+        "Net Income": [20] * 8,
     }, 8)
     q_cf = _frame({
         "Operating Cash Flow": [30] * 8,
@@ -41,28 +42,33 @@ def test_ttm_basis_used_when_full_year_available():
     c = _extract_yf("TST", q_inc=q_inc, a_inc=None, q_cf=q_cf, a_cf=None, info=INFO)
     assert c.basis == "TTM"
     assert c.revenue_ttm == 400 and c.ocf_ttm == 120  # 4 quarters summed
+    assert c.net_income_ttm == 80  # 4 quarters summed
     assert not any("ANNUAL" in m for m in c.low_confidence)
 
 
 def test_annual_basis_uses_annual_cashflow_for_consistency():
     # Only 4 income quarters -> cannot form prior TTM -> annual basis for ALL.
-    q_inc = _frame({"Total Revenue": [100] * 4, "Diluted Average Shares": [10] * 4}, 4)
-    a_inc = _frame({"Total Revenue": [400, 350], "Diluted Average Shares": [10, 11]}, 2)
+    q_inc = _frame({"Total Revenue": [100] * 4, "Diluted Average Shares": [10] * 4,
+                    "Net Income": [20] * 4}, 4)
+    a_inc = _frame({"Total Revenue": [400, 350], "Diluted Average Shares": [10, 11],
+                    "Net Income": [70, 55]}, 2)
     q_cf = _frame({"Operating Cash Flow": [30] * 4, "Capital Expenditure": [-5] * 4,
                    "Stock Based Compensation": [2] * 4}, 4)
     a_cf = _frame({"Operating Cash Flow": [118], "Capital Expenditure": [-18],
                    "Stock Based Compensation": [9]}, 1)
     c = _extract_yf("TST", q_inc=q_inc, a_inc=a_inc, q_cf=q_cf, a_cf=a_cf, info=INFO)
     assert c.basis == "annual"
-    # OCF/capex/SBC come from the ANNUAL statement, not the quarter sum.
+    # OCF/capex/SBC/net income come from the ANNUAL statement, not the quarter sum.
     assert c.ocf_ttm == 118 and c.capex_ttm == 18 and c.sbc_ttm == 9
+    assert c.net_income_ttm == 70
     assert c.revenue_ttm == 400 and c.revenue_ttm_prior == 350
     assert any("ANNUAL" in m for m in c.low_confidence)
 
 
 # --- 2. SBC assumed 0 -------------------------------------------------------
 def test_missing_sbc_line_assumed_zero_not_skipped():
-    q_inc = _frame({"Total Revenue": [100] * 8, "Diluted Average Shares": [10] * 8}, 8)
+    q_inc = _frame({"Total Revenue": [100] * 8, "Diluted Average Shares": [10] * 8,
+                    "Net Income": [20] * 8}, 8)
     q_cf = _frame({"Operating Cash Flow": [30] * 8,
                    "Capital Expenditure": [-5] * 8}, 8)  # no SBC row
     c = _extract_yf("TST", q_inc=q_inc, a_inc=None, q_cf=q_cf, a_cf=None, info=INFO)
@@ -78,7 +84,7 @@ def test_cashflow_entirely_missing_is_skipped():
 
 # --- 3. overrides -----------------------------------------------------------
 def _base_company():
-    return Company("CEG", 5000, 4000, 1400, 200, 0.0, 800, 790, 60000, 25.0, 20.0,
+    return Company("CEG", 5000, 4000, 1400, 200, 0.0, 800, 790, 60000, 25.0, 20.0, 900,
                    name="Constellation", sbc_assumed_zero=True)
 
 
@@ -101,6 +107,7 @@ def test_company_from_override_rescues_complete_record():
         "ocf_ttm": 1400, "capex_ttm": 200, "sbc_ttm": 100,
         "diluted_shares_now": 800, "diluted_shares_prior": 790,
         "market_cap": 60000, "forward_pe": 25, "forward_eps_growth": 20,
+        "net_income_ttm": 900,
     }
     c = company_from_override("FOO", fields)
     assert c is not None and c.manual_override and c.basis == "override"
@@ -124,9 +131,9 @@ def test_load_overrides_uppercases_keys(tmp_path):
 # --- 4. export writer -------------------------------------------------------
 def _results():
     passing = evaluate(Company("APP", 30000, 18000, 12000, 1000, 1500, 1000, 1010,
-                               90000, 25, 100, name="AppLovin", basis="TTM"))
+                               90000, 25, 100, 8000, name="AppLovin", basis="TTM"))
     failing = evaluate(Company("MSFT", 245000, 212000, 118000, 28000, 10000,
-                               7430, 7450, 3100000, 32, 14, name="Microsoft"))
+                               7430, 7450, 3100000, 32, 14, 80000, name="Microsoft"))
     return [failing, passing]
 
 

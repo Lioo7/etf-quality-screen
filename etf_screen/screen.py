@@ -5,22 +5,35 @@ function that applies the validated four-filter / two-track methodology, and
 helpers for ranking and rendering results.
 
 The thresholds and routing here are a *fixed, already-validated spec* — see the
-acceptance tests in ``tests/test_screen.py``. In particular, Track B is reachable
-**only** when PEG is genuinely N/A (a GAAP-unprofitable name with no forward
-P/E); a profitable name that fails the PEG filter must be rejected outright.
+acceptance tests in ``tests/test_screen.py``. Routing keys solely on trailing
+GAAP profitability (``net_income_ttm > 0``): a profitable name goes through
+Track A only (it must clear the PEG filter; if PEG is not computable it is
+rejected, never routed to Track B), while a GAAP-unprofitable name is eligible
+for the PEG-exempt Track B (subject to the quality gate). ``forward_pe`` is
+irrelevant to routing.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum, auto
 from math import isnan, nan
-from statistics import median
+from statistics import mean, median
 
 # --- thresholds (the validated spec) ---------------------------------------
 RULE40_MIN = 40.0       # revenue growth% + adjusted FCF margin%
 PEG_MAX = 2.0           # Track A only
 SBC_MAX_PCT = 15.0      # SBC as % of revenue
 PS_GUARDRAIL_FACTOR = 0.5  # P/S must be <= factor * revenue growth%
+
+# --- trend-mode consistency (Track A only; strict mode is the all-years rule) ---
+TREND_FLOOR = 25.0      # a windowed Rule-of-40 below this is "sub-floor"
+TREND_AVG_MIN = 30.0    # mean windowed Rule of 40 must clear this (chronic-weakness backstop)
+
+# --- balance-sheet gates (current snapshot; raw lines on Company) -----------
+NET_DEBT_TO_FCF_MAX = 3.0      # net debt must be serviceable within 3 years of FCF
+GOODWILL_TO_ASSETS_MAX = 0.40  # goodwill-bloated balance sheet ceiling
+ROIC_MIN = 0.10               # pre-tax return on invested capital floor (Track A strict)
 
 # --- sector context (INFORMATIONAL ONLY — never gates a verdict) -----------
 SECTOR_MIN_PEERS = 5    # don't compute a sector median below this many peers
@@ -35,6 +48,36 @@ def pct(part: float, whole: float) -> float:
     "could not evaluate" and skip the name rather than crashing.
     """
     return (part / whole) * 100 if whole else nan
+
+
+class ScreenStatus(Enum):
+    """The consolidated verdict for one screened company.
+
+    ``passed`` / ``evaluable`` / ``insufficient_history`` on :class:`Result` are
+    read-only properties derived from this single value, so there is one source
+    of truth for a name's outcome.
+    """
+
+    PASS = auto()                  # cleared every gate
+    REJECTED = auto()              # failed a snapshot filter, balance-sheet gate, or consistency
+    PRE_REVENUE = auto()           # revenue_ttm <= 0 — metric math never ran
+    INSUFFICIENT_HISTORY = auto()  # snapshot qualifier demoted for too little annual history
+    NOT_EVALUABLE = auto()         # a divide-by-zero guard tripped (missing/zero denominator)
+
+
+@dataclass
+class AnnualPeriod:
+    """One fiscal year of RAW statement lines ($millions), for the consistency gate.
+
+    Raw lines only — never pre-computed ratios — so the per-year math runs through
+    the same :func:`_period_metrics` helper as the live snapshot, with zero drift.
+    """
+
+    fiscal_label: str           # human-readable year label, e.g. "2023"
+    revenue: float
+    ocf: float                  # operating cash flow
+    capex: float                # capital expenditure (positive magnitude)
+    sbc: float                  # stock-based compensation
 
 
 @dataclass
@@ -56,6 +99,19 @@ class Company:
     market_cap: float
     forward_pe: float | None    # None when GAAP-unprofitable / no estimate
     forward_eps_growth: float   # forward EPS growth, in %
+    net_income_ttm: float       # trailing net income (same basis) — gates routing
+
+    # Current-snapshot balance-sheet lines ($millions) for the balance-sheet gates.
+    # Defaults are GATE-PASSING (net cash, no goodwill, healthy equity/EBIT) and exist
+    # purely as test ergonomics — every provider always populates the real values.
+    total_debt: float = 0.0
+    cash_and_equivalents: float = 0.0
+    goodwill: float = 0.0
+    total_assets: float = 1000.0
+    operating_income: float = 200.0   # EBIT (pre-tax) — drives ROIC
+    total_equity: float = 1000.0
+    goodwill_assumed_zero: bool = False  # goodwill line absent from source -> assumed 0
+    debt_assumed_zero: bool = False      # total-debt line absent from source -> assumed 0
 
     # Optional provenance / confidence annotations from the data layer.
     low_confidence: list[str] = field(default_factory=list)
@@ -65,6 +121,9 @@ class Company:
     overridden_fields: list[str] = field(default_factory=list)  # from overrides.json
     sector: str = "Unknown"     # GICS-style sector bucket from the data layer
     industry: str = ""          # finer sub-sector (optional)
+    # Annual statement history (OLDEST -> NEWEST) for the multi-year consistency
+    # gate. Empty when the data layer could not source a contiguous run.
+    history: list[AnnualPeriod] = field(default_factory=list)
 
     def __post_init__(self) -> None:
         # Coerce Nones (e.g. from older cache entries) and default name to ticker.
@@ -74,6 +133,15 @@ class Company:
             self.overridden_fields = []
         if not self.name:
             self.name = self.ticker
+        # Cache load passes history back as a list of plain dicts (asdict round-trip);
+        # coerce them into AnnualPeriod so equality and the gate see real records.
+        if self.history is None:
+            self.history = []
+        else:
+            self.history = [
+                p if isinstance(p, AnnualPeriod) else AnnualPeriod(**p)
+                for p in self.history
+            ]
 
     @property
     def manual_override(self) -> bool:
@@ -101,6 +169,13 @@ class Result:
     dilution: float
     peg: float | None
 
+    # balance-sheet derived metrics (current snapshot)
+    net_debt: float
+    net_debt_to_fcf: float
+    goodwill_to_assets: float
+    invested_capital: float
+    roic: float | None       # None when invested_capital <= 0 or EBIT absent
+
     # per-filter booleans
     pass_sbc: bool
     pass_rule40: bool
@@ -108,18 +183,41 @@ class Result:
     pass_peg: bool
     quality_gate: bool
 
+    # balance-sheet gate booleans
+    pass_leverage: bool
+    pass_goodwill: bool
+    pass_roic: bool
+    roic_applied: bool       # True only when ROIC was an active gate (Track A + strict)
+
     # verdict
+    status: ScreenStatus
     track_a: bool
     track_b: bool
-    passed: bool
     track: str               # "Track A", "Track B", or "—"
     reasons: list[str]       # rejection reasons (empty if passed)
-    evaluable: bool          # False when a divide-by-zero guard tripped
+
+    # Multi-year consistency gate (None when the gate did not run).
+    consistency: "ConsistencyResult | None" = None
 
     # Informational sector annotation, attached post-hoc by
     # :func:`annotate_sector_context`. NEVER read by :func:`evaluate` or the
     # default ranking — it cannot change passed / track / rank.
     sector_context: "SectorContext | None" = None
+
+    @property
+    def passed(self) -> bool:
+        return self.status is ScreenStatus.PASS
+
+    @property
+    def evaluable(self) -> bool:
+        """False only when metric math never ran (pre-revenue / divide-by-zero)."""
+        return self.status not in (ScreenStatus.PRE_REVENUE, ScreenStatus.NOT_EVALUABLE)
+
+    @property
+    def insufficient_history(self) -> bool:
+        """True ONLY for a snapshot qualifier demoted for lacking annual history —
+        a snapshot-failing name is a normal rejection and never lands in that bucket."""
+        return self.status is ScreenStatus.INSUFFICIENT_HISTORY
 
     @property
     def ticker(self) -> str:
@@ -156,19 +254,66 @@ class Result:
         return PS_GUARDRAIL_FACTOR * self.growth - self.p_s
 
 
-def evaluate(c: Company) -> Result:
+def _period_metrics(
+    revenue: float, revenue_prior: float, ocf: float, capex: float, sbc: float,
+) -> tuple[float, float, float, float]:
+    """Return ``(growth, adj_fcf, adj_margin, rule40)`` for one period.
+
+    The single source of truth for the per-period math, shared by the live
+    snapshot in :func:`evaluate` and the historical years in the consistency
+    gate so there is zero methodology drift between them.
+    """
+    growth = pct(revenue - revenue_prior, revenue_prior)
+    adj_fcf = ocf - capex - sbc
+    adj_margin = pct(adj_fcf, revenue)
+    rule40 = growth + adj_margin
+    return growth, adj_fcf, adj_margin, rule40
+
+
+def evaluate(c: Company, consistency_years: int = 0,
+             consistency_mode: str = "strict") -> Result:
     """Apply the screen to one company and return a fully populated Result.
 
-    Mirrors the authoritative reference implementation exactly.
+    Order of operations: a **pre-revenue firewall** fires first (no metric math
+    on a name with no revenue); then the snapshot four-filter / two-track routing
+    (UNCHANGED); then — only for a snapshot qualifier — the current-snapshot
+    balance-sheet gates and the multi-year consistency gate.
+
+    ``consistency_years`` of 0 (the default) bypasses the historical gate while
+    leaving the pre-revenue and balance-sheet gates active. ``consistency_mode``
+    selects the Track-A durability rule (``"strict"`` = Rule of 40 in every year,
+    the default for library callers; ``"trend"`` = trajectory-aware). Track B is
+    unaffected by the mode.
     """
-    growth = pct(c.revenue_ttm - c.revenue_ttm_prior, c.revenue_ttm_prior)
+    # 1. Pre-revenue firewall — the FIRST check, before any metric math.
+    if c.revenue_ttm <= 0:
+        return _pre_revenue_result(c)
+
+    # 2. Snapshot metrics + balance-sheet derived metrics.
+    growth, adj_fcf, adj_margin, rule40 = _period_metrics(
+        c.revenue_ttm, c.revenue_ttm_prior, c.ocf_ttm, c.capex_ttm, c.sbc_ttm
+    )
     fcf = c.ocf_ttm - c.capex_ttm
-    adj_fcf = fcf - c.sbc_ttm
-    adj_margin = pct(adj_fcf, c.revenue_ttm)
-    rule40 = growth + adj_margin
     p_s = c.market_cap / c.revenue_ttm if c.revenue_ttm else nan
     sbc_pct = pct(c.sbc_ttm, c.revenue_ttm)
     dilution = pct(c.diluted_shares_now - c.diluted_shares_prior, c.diluted_shares_prior)
+
+    net_debt = c.total_debt - c.cash_and_equivalents
+    goodwill_to_assets = c.goodwill / c.total_assets if c.total_assets > 0 else nan
+    invested_capital = c.total_debt + c.total_equity - c.cash_and_equivalents
+    roic = (
+        c.operating_income / invested_capital
+        if invested_capital > 0 and not isnan(c.operating_income)
+        else None
+    )
+    # Leverage ratio: 0 when net cash; undefined (NaN) when there is net debt but
+    # no FCF to service it; else net debt as a multiple of unadjusted FCF.
+    if net_debt <= 0:
+        net_debt_to_fcf = 0.0
+    elif fcf <= 0:
+        net_debt_to_fcf = nan
+    else:
+        net_debt_to_fcf = net_debt / fcf
 
     # PEG is genuinely N/A unless there is a forward P/E AND positive growth.
     peg = (
@@ -177,8 +322,15 @@ def evaluate(c: Company) -> Result:
         else None
     )
 
+    # Routing keys solely on trailing GAAP profitability.
+    gaap_profitable = c.net_income_ttm > 0
+
     # If any input that gates a filter is NaN, the name can't be evaluated.
-    evaluable = not any(isnan(x) for x in (growth, adj_margin, p_s, sbc_pct, dilution))
+    # net_income_ttm is included as belt-and-suspenders: a NaN here would slip
+    # through gaap_profitable as False, so guard it like the derived metrics.
+    evaluable = not any(
+        isnan(x) for x in (growth, adj_margin, p_s, sbc_pct, dilution, c.net_income_ttm)
+    )
 
     pass_sbc = sbc_pct <= SBC_MAX_PCT
     pass_rule40 = rule40 >= RULE40_MIN
@@ -186,46 +338,144 @@ def evaluate(c: Company) -> Result:
     pass_peg = peg is not None and peg <= PEG_MAX
     quality_gate = (adj_fcf > 0) and (dilution < growth)
 
-    track_a = pass_sbc and pass_rule40 and pass_ps and pass_peg
-    # CRITICAL: Track B only when PEG is genuinely N/A. A profitable name that
-    # fails PEG must NOT slip into Track B.
-    track_b = (peg is None) and pass_sbc and pass_rule40 and pass_ps and quality_gate
+    # CRITICAL: routing is gated on GAAP profitability, NOT on whether PEG is
+    # computable. A profitable name must clear PEG via Track A (and is barred
+    # from Track B even when PEG is N/A); only a GAAP-unprofitable name is
+    # eligible for the PEG-exempt Track B.
+    track_a = gaap_profitable and pass_sbc and pass_rule40 and pass_ps and pass_peg
+    track_b = (not gaap_profitable) and pass_sbc and pass_rule40 and pass_ps and quality_gate
 
-    passed = evaluable and (track_a or track_b)
+    # Balance-sheet gates. Leverage + goodwill apply to ALL snapshot qualifiers;
+    # ROIC is gated only for a Track-A name under strict mode (advisory otherwise).
+    pass_leverage = net_debt <= 0 or (fcf > 0 and net_debt_to_fcf <= NET_DEBT_TO_FCF_MAX)
+    pass_goodwill = c.total_assets > 0 and goodwill_to_assets <= GOODWILL_TO_ASSETS_MAX
+    pass_roic = roic is None or roic >= ROIC_MIN
+    roic_applied = track_a and consistency_mode == "strict"
+
+    consistency: ConsistencyResult | None = None
 
     if not evaluable:
+        status = ScreenStatus.NOT_EVALUABLE
         track = "—"
         reasons = ["could not evaluate (missing/zero denominator)"]
-    elif track_a:
-        track = "Track A"
-        reasons = []
-    elif track_b:
-        track = "Track B"
-        reasons = []
-    else:
+    elif not (track_a or track_b):
+        status = ScreenStatus.REJECTED
         track = "—"
         reasons = _rejection_reasons(
-            pass_sbc, pass_rule40, pass_ps, pass_peg, quality_gate,
+            gaap_profitable, pass_sbc, pass_rule40, pass_ps, quality_gate,
             sbc_pct, rule40, p_s, growth, peg,
         )
+    else:
+        # A snapshot track cleared — layer the balance-sheet and consistency gates.
+        track = "Track A" if track_a else "Track B"
+        bs_reasons = _balance_sheet_reasons(
+            pass_leverage, pass_goodwill, roic_applied, pass_roic,
+            net_debt, fcf, net_debt_to_fcf, goodwill_to_assets, roic,
+        )
+        if consistency_years > 0:
+            consistency = (
+                track_a_consistency(c.history, consistency_years, consistency_mode)
+                if track_a else track_b_consistency(c.history, consistency_years)
+            )
+
+        # Status precedence: a balance-sheet failure is definitive and wins over
+        # the historical gate; otherwise insufficiency, then a consistency fail.
+        if bs_reasons:
+            status = ScreenStatus.REJECTED
+            track = "—"
+            reasons = bs_reasons
+            if consistency is not None and consistency.status is ConsistencyStatus.FAIL:
+                reasons = reasons + [
+                    _consistency_fail_reason(consistency, track_a, consistency_years)
+                ]
+        elif consistency is not None and consistency.status is ConsistencyStatus.INSUFFICIENT:
+            status = ScreenStatus.INSUFFICIENT_HISTORY
+            track = "—"
+            reasons = [
+                f"insufficient annual history "
+                f"({consistency.years_available} of {consistency.years_required} yrs)"
+            ]
+        elif consistency is not None and consistency.status is ConsistencyStatus.FAIL:
+            status = ScreenStatus.REJECTED
+            track = "—"
+            reasons = [_consistency_fail_reason(consistency, track_a, consistency_years)]
+        else:
+            status = ScreenStatus.PASS
+            reasons = []
 
     return Result(
         company=c,
         growth=growth, fcf=fcf, adj_fcf=adj_fcf, adj_margin=adj_margin,
         rule40=rule40, p_s=p_s, sbc_pct=sbc_pct, dilution=dilution, peg=peg,
+        net_debt=net_debt, net_debt_to_fcf=net_debt_to_fcf,
+        goodwill_to_assets=goodwill_to_assets, invested_capital=invested_capital, roic=roic,
         pass_sbc=pass_sbc, pass_rule40=pass_rule40, pass_ps=pass_ps,
         pass_peg=pass_peg, quality_gate=quality_gate,
-        track_a=track_a, track_b=track_b, passed=passed,
-        track=track, reasons=reasons, evaluable=evaluable,
+        pass_leverage=pass_leverage, pass_goodwill=pass_goodwill,
+        pass_roic=pass_roic, roic_applied=roic_applied,
+        status=status, track_a=track_a, track_b=track_b,
+        track=track, reasons=reasons, consistency=consistency,
     )
 
 
+def _pre_revenue_result(c: Company) -> Result:
+    """A Result for a pre-revenue name — metric math never ran, every gate moot."""
+    return Result(
+        company=c,
+        growth=nan, fcf=nan, adj_fcf=nan, adj_margin=nan, rule40=nan,
+        p_s=nan, sbc_pct=nan, dilution=nan, peg=None,
+        net_debt=nan, net_debt_to_fcf=nan, goodwill_to_assets=nan,
+        invested_capital=nan, roic=None,
+        pass_sbc=False, pass_rule40=False, pass_ps=False, pass_peg=False,
+        quality_gate=False, pass_leverage=False, pass_goodwill=False,
+        pass_roic=False, roic_applied=False,
+        status=ScreenStatus.PRE_REVENUE, track_a=False, track_b=False,
+        track="—", reasons=["pre-revenue (revenue_ttm <= 0)"], consistency=None,
+    )
+
+
+def _balance_sheet_reasons(
+    pass_leverage: bool, pass_goodwill: bool, roic_applied: bool, pass_roic: bool,
+    net_debt: float, fcf: float, net_debt_to_fcf: float,
+    goodwill_to_assets: float, roic: float | None,
+) -> list[str]:
+    """All failing balance-sheet-gate reasons for a snapshot qualifier (no short-circuit).
+
+    ROIC contributes a reason only when it was an active gate (Track A + strict)
+    AND a value was computable; a not-computable ROIC is advisory, never a fail.
+    """
+    reasons: list[str] = []
+    if not pass_leverage:
+        if net_debt > 0 and fcf <= 0:
+            reasons.append("net debt with non-positive FCF (no cash to service debt)")
+        else:
+            reasons.append(
+                f"Net Debt/FCF = {net_debt_to_fcf:.1f} (> {NET_DEBT_TO_FCF_MAX:.1f})"
+            )
+    if not pass_goodwill:
+        if isnan(goodwill_to_assets):
+            reasons.append("total assets <= 0 (broken balance sheet)")
+        else:
+            reasons.append(
+                f"Goodwill/Assets = {goodwill_to_assets * 100:.0f}% "
+                f"(> {GOODWILL_TO_ASSETS_MAX * 100:.0f}%)"
+            )
+    if roic_applied and roic is not None and not pass_roic:
+        reasons.append(f"ROIC = {roic * 100:.1f}% (< {ROIC_MIN * 100:.0f}%)")
+    return reasons
+
+
 def _rejection_reasons(
-    pass_sbc: bool, pass_rule40: bool, pass_ps: bool, pass_peg: bool,
+    gaap_profitable: bool, pass_sbc: bool, pass_rule40: bool, pass_ps: bool,
     quality_gate: bool, sbc_pct: float, rule40: float, p_s: float,
     growth: float, peg: float | None,
 ) -> list[str]:
-    """Build a human-readable list of why a name was rejected."""
+    """Build a human-readable list of why a name was rejected.
+
+    Branches on GAAP profitability — the routing key — not on whether PEG is
+    computable: a profitable name lives or dies on Track A (PEG required), an
+    unprofitable one on the Track B quality gate.
+    """
     reasons: list[str] = []
     if not pass_rule40:
         reasons.append(f"Rule of 40 = {rule40:.1f} (< {RULE40_MIN:.0f})")
@@ -235,13 +485,177 @@ def _rejection_reasons(
         )
     if not pass_sbc:
         reasons.append(f"SBC = {sbc_pct:.1f}% of revenue (> {SBC_MAX_PCT:.0f}%)")
-    if peg is None:
-        # PEG N/A -> Track A impossible; rejection then comes from quality gate.
-        if not quality_gate:
-            reasons.append("fails Track B quality gate (adj FCF<=0 or dilution>=growth)")
-    elif not pass_peg:
-        reasons.append(f"PEG = {peg:.1f} (> {PEG_MAX:.1f}); profitable, so Track B is barred")
+    if gaap_profitable:
+        # Profitable -> Track A only, so PEG must clear; Track B is barred.
+        if peg is None:
+            reasons.append(
+                "PEG not computable (no forward P/E or forward EPS growth <= 0); "
+                "profitable name must clear PEG, Track B barred"
+            )
+        elif peg > PEG_MAX:
+            reasons.append(
+                f"PEG = {peg:.1f} (> {PEG_MAX:.1f}); profitable, Track B barred"
+            )
+    elif not quality_gate:
+        # Unprofitable -> Track B only; rejection comes from the quality gate.
+        reasons.append("fails Track B quality gate (adj FCF<=0 or dilution>=growth)")
     return reasons or ["did not clear either track"]
+
+
+# ---------------------------------------------------------------------------
+# Multi-year consistency gate (annual durability filter) — pure, no IO
+# ---------------------------------------------------------------------------
+class ConsistencyStatus(Enum):
+    """Outcome of the multi-year consistency gate for a snapshot qualifier."""
+
+    PASS = auto()
+    FAIL = auto()
+    INSUFFICIENT = auto()
+
+
+@dataclass
+class ConsistencyResult:
+    """Verdict + trajectory of the consistency gate, for reporting and audit.
+
+    The trajectory lists are informational (oldest -> newest); the gate itself
+    stays binary. ``rule40_by_year`` / ``adj_fcf_by_year`` drive the report's
+    deceleration-audit column and the rejection-reason string.
+    """
+
+    status: ConsistencyStatus
+    years_required: int
+    years_available: int
+    rule40_by_year: list[tuple[str, float]] = field(default_factory=list)
+    adj_fcf_by_year: list[tuple[str, float]] = field(default_factory=list)
+    note: str = ""
+
+
+def track_a_consistency(
+    history: list[AnnualPeriod], years: int, mode: str = "strict",
+) -> ConsistencyResult:
+    """Track A durability over the most-recent windowed Rule-of-40 values.
+
+    A windowed year's Rule of 40 needs its prior year's revenue, so ``years``
+    rule40 values require ``years + 1`` contiguous complete annual periods.
+    Too few -> INSUFFICIENT. A NaN in the window is a data gap (not a genuine
+    fail) -> INSUFFICIENT. The windowing here is mode-independent; only the
+    PASS/FAIL decision differs (see :func:`_rule40_trend_pass`):
+
+    * ``strict`` — Rule of 40 >= :data:`RULE40_MIN` in EVERY windowed year.
+    * ``trend``  — trajectory-aware (recency anchor + average backstop + no
+      lumpy sub-floor collapse).
+    """
+    required = years + 1
+    if len(history) < required:
+        return ConsistencyResult(
+            ConsistencyStatus.INSUFFICIENT, required, len(history),
+            note="need one extra year for the oldest growth rate",
+        )
+    # The window is the most recent ``years`` periods, each paired with its prior.
+    rule40_by_year: list[tuple[str, float]] = []
+    for i in range(len(history) - years, len(history)):
+        cur, prior = history[i], history[i - 1]
+        _, _, _, rule40 = _period_metrics(
+            cur.revenue, prior.revenue, cur.ocf, cur.capex, cur.sbc
+        )
+        rule40_by_year.append((cur.fiscal_label, rule40))
+    if any(isnan(v) for _, v in rule40_by_year):
+        return ConsistencyResult(
+            ConsistencyStatus.INSUFFICIENT, required, len(history),
+            rule40_by_year=rule40_by_year, note="data gap (NaN) in window",
+        )
+    vals = [v for _, v in rule40_by_year]
+    status = (
+        ConsistencyStatus.PASS
+        if _rule40_consistent(vals, mode)
+        else ConsistencyStatus.FAIL
+    )
+    return ConsistencyResult(
+        status, required, len(history), rule40_by_year=rule40_by_year,
+        note=f"mode={mode}",
+    )
+
+
+def _rule40_consistent(vals: list[float], mode: str) -> bool:
+    """PASS/FAIL decision for windowed Rule-of-40 values (oldest -> newest).
+
+    ``strict``: every value clears :data:`RULE40_MIN`.
+    ``trend``: the latest year compounds now (``>= RULE40_MIN``), the window
+    averages at least :data:`TREND_AVG_MIN`, and there is no *lumpy collapse* —
+    a year that drops below :data:`TREND_FLOOR` from a higher prior year. A
+    sub-floor first year (a launch year, no prior in the window) is forgiven.
+    """
+    if not vals:
+        return False
+    if mode == "strict":
+        return all(v >= RULE40_MIN for v in vals)
+    if vals[-1] < RULE40_MIN:
+        return False
+    if mean(vals) < TREND_AVG_MIN:
+        return False
+    collapse = any(
+        v < TREND_FLOOR and i > 0 and v < vals[i - 1]
+        for i, v in enumerate(vals)
+    )
+    return not collapse
+
+
+def track_b_consistency(history: list[AnnualPeriod], years: int) -> ConsistencyResult:
+    """Track B durability: adjusted FCF > 0 in EVERY available year of the window.
+
+    Effective floor is ``min(2, years)`` available annual periods. Fewer ->
+    INSUFFICIENT. Otherwise adj FCF (ocf - capex - sbc) must be > 0 every year ->
+    PASS else FAIL. The Rule-of-40 trajectory is filled where a prior year exists
+    (display only); the gate keys solely on adjusted FCF.
+    """
+    floor = min(2, years)
+    window = history[-years:] if years else []
+    if len(window) < floor:
+        return ConsistencyResult(
+            ConsistencyStatus.INSUFFICIENT, floor, len(window),
+            note=f"need at least {floor} annual years of adjusted FCF",
+        )
+    adj_fcf_by_year = [(p.fiscal_label, p.ocf - p.capex - p.sbc) for p in window]
+    # Rule-of-40 trajectory for the window, where a prior year is available.
+    start = len(history) - len(window)
+    rule40_by_year: list[tuple[str, float]] = []
+    for i in range(start, len(history)):
+        if i == 0:
+            continue  # no prior year for a growth rate
+        cur, prior = history[i], history[i - 1]
+        _, _, _, rule40 = _period_metrics(
+            cur.revenue, prior.revenue, cur.ocf, cur.capex, cur.sbc
+        )
+        rule40_by_year.append((cur.fiscal_label, rule40))
+    status = (
+        ConsistencyStatus.PASS
+        if all(v > 0 for _, v in adj_fcf_by_year)
+        else ConsistencyStatus.FAIL
+    )
+    return ConsistencyResult(
+        status, floor, len(window),
+        rule40_by_year=rule40_by_year, adj_fcf_by_year=adj_fcf_by_year,
+    )
+
+
+def _fmt_trajectory(pairs: list[tuple[str, float]]) -> str:
+    """Render a ``(label, value)`` series as ``[55.1 -> 42.0 -> 40.5]`` (oldest first)."""
+    return "[" + " -> ".join(f"{v:.1f}" for _, v in pairs) + "]"
+
+
+def _consistency_fail_reason(
+    result: ConsistencyResult, track_a: bool, years: int,
+) -> str:
+    """The rejection-reason string for a name demoted by a FAILED consistency gate."""
+    if track_a:
+        return (
+            f"failed {years}-yr consistency gate "
+            f"(Rule40 Hist: {_fmt_trajectory(result.rule40_by_year)})"
+        )
+    return (
+        f"failed {years}-yr consistency gate "
+        f"(AdjFCF Hist: {_fmt_trajectory(result.adj_fcf_by_year)})"
+    )
 
 
 def rank(results: list[Result], mode: str = "rule40") -> list[Result]:
