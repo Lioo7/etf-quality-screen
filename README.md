@@ -287,6 +287,71 @@ Why survivors passed:
 (The real table also carries the `Dil%`, `SBC%`, and `PEG` columns between `P/S`
 and the balance-sheet block — elided as `...` here for width.)
 
+## Reading a result
+
+The screen now has enough states that output literacy *is* the user interface.
+This run of the full mock universe produces every one of them:
+
+```bash
+python -m etf_screen.cli --provider mock \
+    --tickers MSFT,GOOGL,CRWD,DURABLE,MOAT,LEAKY,FRESH,DECEL,NEWLY,BURN,ROLLUP,LEVERED
+```
+
+**A clean pass, fully annotated — MOAT.** Walk it through every layer:
+
+1. *Pre-revenue firewall*: revenue is positive → proceed.
+2. *IPO seasoning*: no recent listing date → proceed.
+3. *Routing*: GAAP-profitable → Track A only.
+4. *Four filters*: Rule 40 = 69.3 (growth 33.3% + adj FCF margin 36.0%) ✓ ·
+   P/S 6.0 vs guardrail 16.7 ✓ · SBC 4.0% ✓ · PEG 1.56 ✓ → snapshot Track A.
+5. *Balance-sheet gates*: net cash (`NetDebt/FCF 0.0`) ✓ · goodwill 2% of
+   assets ✓ · ROIC 31.4% (advisory here — trend mode) ✓.
+6. *Earnings quality*: `EQ(y) N/A` — its mock history carries no net-income
+   line, so the gate honestly reports "not applicable" instead of guessing.
+7. *Consistency (3-yr trend)*: `Rule40 Hist [51.3 -> 48.1 -> 50.3]` — latest ≥
+   40, mean ≥ 30, no collapse → PASS.
+8. *Advisory annotations*: `ROIC Med(y) 28.6 (6y)` → **roic_durable** (median ≥
+   15% over ≥ 5y); `GM% 75.0 (σ0.1, 6y)` → **pricing_power** (≥ 40%, stable,
+   ≥ 5y). Tags appear on its "why it passed" line.
+9. *Entry timing*: `ATH% / 3M%` are `N/A` (no mock price data for this name) —
+   reported as unknown, never invented.
+
+**The watchlist case — MSFT.** Quality is never the problem: profitable, Rule
+40 = 48.2, clean balance sheet, trend consistency passes. But `P/S 12.7 >
+guardrail 7.8` and `PEG 2.3 > 2.0` — valuation is the *only* blocker, so
+instead of vanishing into the rejected pile it lands here:
+
+```
+WATCHLIST (1) — wonderful business, wrong price; ...
+  MSFT (Microsoft Corporation): P/S = 12.7 (> guardrail 7.8); PEG = 2.3 (> 2.0);
+  profitable, Track B barred -> unlock: P/S $256.64, PEG $365.07
+```
+
+Read the unlock prices as pre-computed buy triggers: below ~$257 the P/S
+guardrail clears; below ~$365 PEG clears. Both must clear for a pass, so the
+*binding* trigger is the lower one. They were computed on a calm day — when the
+price gets there, the decision is already made.
+
+**The seasoning case — FRESH.** Would pass Track A on its numbers, but it
+listed ~4 months ago, so it is set aside — not rejected, not passed:
+
+```
+RECENT_IPO (1) — listed within the last 12 months; ...
+  FRESH (Fresh Listing Inc.): listed 2026-03-10
+```
+
+**Every other terminal state in the same run:**
+
+| Name | Verdict | Why |
+| --- | --- | --- |
+| DURABLE, DECEL | PASS (Track A) | DECEL's dip year (33.6) is forgiven by `trend`; it fails under `--consistency-mode strict` |
+| CRWD | PASS (Track B) | PEG genuinely N/A; also tagged **HOT** (+58% in 3 mo, 5% off ATH) — a patience flag, not a rejection |
+| GOOGL | REJECTED | Rule of 40 = 33.0 — a quality fail, so no watchlist candidacy |
+| LEAKY | REJECTED | earnings quality: 3-yr AdjFCF/NI = 0.67 < 0.8 — profits not becoming cash |
+| ROLLUP / LEVERED | REJECTED | goodwill 60% of assets / Net Debt 3.7× FCF — balance-sheet gates |
+| BURN | REJECTED | a negative adjusted-FCF year in the Track-B consistency window |
+| NEWLY | INSUFFICIENT_HISTORY | cleared the snapshot, but 2 of 4 required annual years |
+
 ## Example runs
 
 Two real runs are checked in under [`examples/`](examples/):

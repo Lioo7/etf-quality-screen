@@ -2,6 +2,11 @@
 
 ## v0.2 (in progress)
 
+- **README "Reading a result" walkthrough.** One full mock run exercising
+  every terminal state (PASS with all annotations, WATCHLIST with unlock
+  prices, RECENT_IPO, every gate rejection, INSUFFICIENT_HISTORY), walked
+  through gate by gate.
+
 - **ROIC history (advisory).** Snapshot ROIC (unchanged as a gate) is now
   joined by a multi-year median over up to 10 annual periods, plus the year
   count used. A `roic_durable` annotation is added when the median is ≥ 15%
