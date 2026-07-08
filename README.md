@@ -85,6 +85,16 @@ rescue:
 When multiple gates fail, a balance-sheet failure is definitive and takes
 precedence over the history checks in the verdict.
 
+**ROIC history (advisory).** A single year's ROIC is noisy — one restructuring
+charge or a cyclical margin peak can swing it violently. Alongside the snapshot
+gate above (unchanged), each snapshot qualifier also gets the **median** ROIC
+over up to the last 10 annual periods, plus the year count actually used
+(e.g. `ROIC Med(y)` shows `18.2 (7y)`). A year missing operating income, or with
+non-positive invested capital, is skipped rather than fabricated. Median ≥ 15%
+over ≥ 5 usable years earns the `roic_durable` tag — evidence of a moat wide
+enough to survive one bad year, not a rounding error. This is purely
+informational: it never changes `passed`, `track`, or ranking.
+
 Survivors are ranked by Rule of 40 (desc), tie-broken by PEG (asc), then P/S
 headroom.
 
@@ -208,9 +218,9 @@ Phase-1 elimination counts
 
 Shortlist (1 names) — ranked by Rule of 40
 
-  #  Ticker  Company        Sector      Track    Growth%  AdjFCF%  Rule40   P/S  ...  NetDebt/FCF  GW/Assets%  ROIC%  Rule40 Hist
----  ------  -------------  ----------  -------  -------  -------  ------  ----  ---  -----------  ----------  -----  --------------
-  1  CRWD    CrowdStrike…   Technology  Track B     45.8     13.7    59.5  22.9  ...          0.0           2  -25.0  [63.8 -> 59.5]
+  #  Ticker  Company        Sector      Track    Growth%  AdjFCF%  Rule40   P/S  ...  NetDebt/FCF  GW/Assets%  ROIC%  ROIC Med(y)  Rule40 Hist
+---  ------  -------------  ----------  -------  -------  -------  ------  ----  ---  -----------  ----------  -----  -----------  --------------
+  1  CRWD    CrowdStrike…   Technology  Track B     45.8     13.7    59.5  22.9  ...          0.0           2  -25.0  N/A          [63.8 -> 59.5]
 
 Why survivors passed:
   CRWD (CrowdStrike Holdings,…): Track B (Rule40 59.5, P/S 22.9 vs guardrail 22.9, SBC 14.3%)
@@ -382,12 +392,12 @@ consult a qualified professional before any financial decision.
 ## Development
 
 ```bash
-pytest -q          # 85 tests: acceptance fixtures, edge cases, data layer,
+pytest -q          # 96 tests: acceptance fixtures, edge cases, data layer,
                    # basis consistency, SBC-assumed-0, overrides, export,
                    # sector context (incl. the verdicts-unchanged regression),
                    # the issuer-holdings-CSV loader, the multi-year consistency
-                   # gate (strict + trend), the balance-sheet gates, and the
-                   # pre-revenue firewall
+                   # gate (strict + trend), the balance-sheet gates, the
+                   # pre-revenue firewall, and the ROIC-history annotation
 flake8 etf_screen tests
 ```
 

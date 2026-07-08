@@ -120,6 +120,9 @@ class MockProvider(DataProvider):
                             AnnualPeriod("2024", 3500, 1100, 120, 500),
                         ]),
         # Passes snapshot Track A and every balance-sheet gate incl. ROIC>=10%.
+        # History also carries EBIT/balance-sheet lines so the ROIC-history
+        # annotation has 4 usable years (median ~18%, but < ROIC_DURABLE_YEARS
+        # so `durable` stays False -- MOAT below is the durable-moat example).
         "DURABLE": Company("DURABLE", 1000, 700, 400, 50, 50, 1000, 1000,
                            5000, 30.0, 20.0, 200,
                            total_debt=0, cash_and_equivalents=300, goodwill=0,
@@ -127,11 +130,47 @@ class MockProvider(DataProvider):
                            name="Durable Compounder Inc.", basis="TTM",
                            sector="Technology", industry="Software—Application",
                            history=[
-                               AnnualPeriod("2021", 500, 200, 25, 25),
-                               AnnualPeriod("2022", 650, 260, 30, 30),
-                               AnnualPeriod("2023", 845, 340, 40, 40),
-                               AnnualPeriod("2024", 1100, 440, 50, 50),
+                               AnnualPeriod("2021", 500, 200, 25, 25,
+                                            operating_income=110, total_debt=0,
+                                            cash_and_equivalents=150, total_equity=500),
+                               AnnualPeriod("2022", 650, 260, 30, 30,
+                                            operating_income=140, total_debt=0,
+                                            cash_and_equivalents=200, total_equity=650),
+                               AnnualPeriod("2023", 845, 340, 40, 40,
+                                            operating_income=170, total_debt=0,
+                                            cash_and_equivalents=250, total_equity=820),
+                               AnnualPeriod("2024", 1100, 440, 50, 50,
+                                            operating_income=200, total_debt=0,
+                                            cash_and_equivalents=300, total_equity=1000),
                            ]),
+        # Wide-moat example for the ROIC-history annotation: ROIC >= 15% every
+        # year across 6 years -> roic_durable=True (median comfortably >= 15%).
+        "MOAT": Company("MOAT", 2000, 1500, 900, 100, 80, 1000, 1000,
+                        12000, 28.0, 18.0, 400,
+                        total_debt=0, cash_and_equivalents=600, goodwill=50,
+                        total_assets=3000, operating_income=440, total_equity=2000,
+                        name="Wide Moat Compounder Inc.", basis="TTM",
+                        sector="Technology", industry="Software—Application",
+                        history=[
+                            AnnualPeriod("2019", 800, 320, 40, 30,
+                                         operating_income=170, total_debt=0,
+                                         cash_and_equivalents=200, total_equity=850),
+                            AnnualPeriod("2020", 1000, 400, 50, 40,
+                                         operating_income=220, total_debt=0,
+                                         cash_and_equivalents=280, total_equity=1050),
+                            AnnualPeriod("2021", 1250, 500, 60, 50,
+                                         operating_income=270, total_debt=0,
+                                         cash_and_equivalents=350, total_equity=1300),
+                            AnnualPeriod("2022", 1500, 600, 70, 60,
+                                         operating_income=320, total_debt=0,
+                                         cash_and_equivalents=430, total_equity=1550),
+                            AnnualPeriod("2023", 1750, 700, 80, 70,
+                                         operating_income=380, total_debt=0,
+                                         cash_and_equivalents=510, total_equity=1780),
+                            AnnualPeriod("2024", 2000, 900, 100, 80,
+                                         operating_income=440, total_debt=0,
+                                         cash_and_equivalents=600, total_equity=2000),
+                        ]),
         # Passes snapshot Track A but a windowed year decelerates < 40 (strict FAIL).
         "DECEL": Company("DECEL", 1000, 700, 400, 50, 50, 1000, 1000,
                          5000, 30.0, 20.0, 200,
@@ -276,6 +315,9 @@ _TOTAL_EQUITY = [
     "Total Equity Gross Minority Interest",
     "Common Stock Equity",
 ]
+# Cost of revenue, for the per-year gross-margin annotation (banks/insurers
+# typically don't report this line -> gross margin is N/A for them, never guessed).
+_COGS = ["Cost Of Revenue", "Reconciled Cost Of Revenue"]
 
 
 def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info, q_bal=None, a_bal=None) -> Company:
@@ -425,7 +467,7 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info, q_bal=None, a_bal=None) 
         low_confidence=low_conf,
         name=name, basis=basis, sbc_assumed_zero=sbc_assumed_zero,
         sector=sector, industry=industry,
-        history=_annual_history(a_inc, a_cf),
+        history=_annual_history(a_inc, a_cf, a_bal),
     )
 
 
@@ -491,7 +533,7 @@ def _fiscal_label(col) -> str:
     return str(year) if year is not None else str(col)[:10]
 
 
-def _annual_history(a_inc, a_cf) -> list:
+def _annual_history(a_inc, a_cf, a_bal=None) -> list:
     """Build a contiguous run of COMPLETE annual periods, oldest -> newest.
 
     Revenue comes from the income frame; OCF/capex/SBC from the cash-flow frame —
@@ -500,6 +542,12 @@ def _annual_history(a_inc, a_cf) -> list:
     most recent complete year and TRUNCATES at the first backward gap. A skipped
     middle year would misalign growth, so we stop rather than skip. Lines are
     never fabricated or zero-filled — a missing line just ends the history.
+
+    Operating income, net income, COGS (income frame) and total debt / cash /
+    total equity (balance-sheet frame, when supplied) are looked up per year on a
+    BEST-EFFORT basis for the advisory ROIC-history / gross-margin annotations and
+    the earnings-quality gate — a year missing one of these simply carries `None`
+    for that field rather than truncating the (revenue/OCF/capex/SBC-gated) run.
     """
     if a_inc is None or a_cf is None:
         return []
@@ -507,6 +555,12 @@ def _annual_history(a_inc, a_cf) -> list:
     ocf = _labeled_row(a_cf, _OCF)
     capex = _labeled_row(a_cf, _CAPEX)
     sbc = _labeled_row(a_cf, _SBC)
+    net_income = _labeled_row(a_inc, _NET_INCOME)
+    operating_income = _labeled_row(a_inc, _EBIT)
+    cogs = _labeled_row(a_inc, _COGS)
+    total_debt = _labeled_row(a_bal, _TOTAL_DEBT) if a_bal is not None else {}
+    cash = _labeled_row(a_bal, _CASH) if a_bal is not None else {}
+    total_equity = _labeled_row(a_bal, _TOTAL_EQUITY) if a_bal is not None else {}
     cols = sorted(set(a_inc.columns) | set(a_cf.columns), reverse=True)
     periods: list[AnnualPeriod] = []
     started = False
@@ -518,6 +572,12 @@ def _annual_history(a_inc, a_cf) -> list:
                 fiscal_label=_fiscal_label(col),
                 revenue=rev[col], ocf=ocf[col],
                 capex=abs(capex[col]), sbc=sbc[col],
+                operating_income=operating_income.get(col),
+                total_debt=total_debt.get(col),
+                cash_and_equivalents=cash.get(col),
+                total_equity=total_equity.get(col),
+                net_income=net_income.get(col),
+                cogs=cogs.get(col),
             ))
         elif started:
             break  # first backward gap after the run begins -> truncate
@@ -654,8 +714,10 @@ class FMPProvider(DataProvider):
             low_conf.append("total debt not reported by source - assumed 0")
 
         # Annual history for the consistency gate (best-effort; never blocks a name).
-        inc_a = self._get(f"income-statement/{ticker}", period="annual", limit=5)
-        cf_a = self._get(f"cash-flow-statement/{ticker}", period="annual", limit=5)
+        # bal_a additionally feeds the advisory ROIC-history annotation.
+        inc_a = self._get(f"income-statement/{ticker}", period="annual", limit=10)
+        cf_a = self._get(f"cash-flow-statement/{ticker}", period="annual", limit=10)
+        bal_a = self._get(f"balance-sheet-statement/{ticker}", period="annual", limit=10)
 
         return Company(
             ticker=ticker, revenue_ttm=revenue_ttm, revenue_ttm_prior=revenue_prior,
@@ -670,18 +732,27 @@ class FMPProvider(DataProvider):
             low_confidence=low_conf,
             name=name, basis="TTM", sbc_assumed_zero=not sbc_found,
             sector=sector, industry=industry,
-            history=_fmp_annual_history(inc_a, cf_a),
+            history=_fmp_annual_history(inc_a, cf_a, bal_a),
         )
 
 
-def _fmp_annual_history(inc_a: list[dict], cf_a: list[dict]) -> list[AnnualPeriod]:
+def _fmp_annual_history(
+    inc_a: list[dict], cf_a: list[dict], bal_a: list[dict] | None = None,
+) -> list[AnnualPeriod]:
     """Contiguous run of complete annual periods from FMP statements, oldest -> newest.
 
     Income and cash-flow records are aligned by ``calendarYear``; walking newest
     -> oldest, the run truncates at the first year missing any required line (never
     skipping a middle year, which would misalign growth). No line is zero-filled.
+
+    Operating income, net income, COGS, and (when ``bal_a`` is supplied) total
+    debt / cash / total equity are looked up per year on a BEST-EFFORT basis for
+    the advisory ROIC-history / gross-margin annotations and the earnings-quality
+    gate — a year missing one of these carries ``None`` for that field only,
+    never truncating the (revenue/OCF/capex/SBC-gated) run.
     """
     cf_by_year = {q.get("calendarYear"): q for q in cf_a}
+    bal_by_year = {b.get("calendarYear"): b for b in (bal_a or [])}
     periods: list[AnnualPeriod] = []
     started = False
     for q in inc_a:  # FMP returns most-recent first
@@ -696,17 +767,29 @@ def _fmp_annual_history(inc_a: list[dict], cf_a: list[dict]) -> list[AnnualPerio
         )
         if complete:
             started = True
+            bq = bal_by_year.get(year)
             periods.append(AnnualPeriod(
                 fiscal_label=str(year),
                 revenue=float(rev),
                 ocf=float(cq["operatingCashFlow"]),
                 capex=abs(float(cq["capitalExpenditure"])),
                 sbc=float(cq["stockBasedCompensation"]),
+                operating_income=_fmp_num(q.get("operatingIncome")),
+                net_income=_fmp_num(q.get("netIncome")),
+                cogs=_fmp_num(q.get("costOfRevenue")),
+                total_debt=_fmp_num(bq.get("totalDebt")) if bq else None,
+                cash_and_equivalents=_fmp_num(bq.get("cashAndCashEquivalents")) if bq else None,
+                total_equity=_fmp_num(bq.get("totalStockholdersEquity")) if bq else None,
             ))
         elif started:
             break  # first backward gap -> truncate
     periods.reverse()  # oldest -> newest
     return periods
+
+
+def _fmp_num(v) -> float | None:
+    """``float(v)`` or ``None`` — best-effort optional numeric field from FMP JSON."""
+    return None if v is None else float(v)
 
 
 def _nearest_future_eps(estimates: list[dict]) -> float | None:

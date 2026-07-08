@@ -35,6 +35,11 @@ NET_DEBT_TO_FCF_MAX = 3.0      # net debt must be serviceable within 3 years of 
 GOODWILL_TO_ASSETS_MAX = 0.40  # goodwill-bloated balance sheet ceiling
 ROIC_MIN = 0.10               # pre-tax return on invested capital floor (Track A strict)
 
+# --- ROIC history (advisory; multi-year durable-moat proxy) -----------------
+ROIC_DURABLE_MIN = 0.15   # median ROIC bar for the durability annotation
+ROIC_DURABLE_YEARS = 5    # minimum years of usable data to claim durability
+ROIC_HISTORY_MIN_YEARS = 3  # below this, the median is flagged as noisy/thin
+
 # --- sector context (INFORMATIONAL ONLY — never gates a verdict) -----------
 SECTOR_MIN_PEERS = 5    # don't compute a sector median below this many peers
 # Result attributes whose per-sector median we report (adj_fcf_margin == adj_margin).
@@ -71,6 +76,13 @@ class AnnualPeriod:
 
     Raw lines only — never pre-computed ratios — so the per-year math runs through
     the same :func:`_period_metrics` helper as the live snapshot, with zero drift.
+
+    ``revenue``/``ocf``/``capex``/``sbc`` gate the multi-year consistency window and
+    must form a contiguous run (see ``providers._annual_history``). The fields below
+    are OPTIONAL (default ``None``) and feed only the advisory ROIC-history /
+    gross-margin annotations and the earnings-quality gate — a year missing one of
+    these is simply skipped for that metric, never fabricated, and never truncates
+    the consistency-gate history.
     """
 
     fiscal_label: str           # human-readable year label, e.g. "2023"
@@ -78,6 +90,12 @@ class AnnualPeriod:
     ocf: float                  # operating cash flow
     capex: float                # capital expenditure (positive magnitude)
     sbc: float                  # stock-based compensation
+    operating_income: float | None = None      # EBIT that year (ROIC numerator)
+    total_debt: float | None = None            # ROIC denominator (invested capital)
+    cash_and_equivalents: float | None = None  # ROIC denominator (invested capital)
+    total_equity: float | None = None          # ROIC denominator (invested capital)
+    net_income: float | None = None            # earnings-quality gate
+    cogs: float | None = None                  # gross-margin gate; None = GM N/A that yr
 
 
 @dataclass
@@ -203,6 +221,10 @@ class Result:
     # :func:`annotate_sector_context`. NEVER read by :func:`evaluate` or the
     # default ranking — it cannot change passed / track / rank.
     sector_context: "SectorContext | None" = None
+
+    # Multi-year ROIC durability (advisory — None when the name never reached a
+    # snapshot qualifier, mirroring ``consistency``). Never gates the verdict.
+    roic_history: "RoicHistory | None" = None
 
     @property
     def passed(self) -> bool:
@@ -353,6 +375,7 @@ def evaluate(c: Company, consistency_years: int = 0,
     roic_applied = track_a and consistency_mode == "strict"
 
     consistency: ConsistencyResult | None = None
+    roic_hist: RoicHistory | None = None
 
     if not evaluable:
         status = ScreenStatus.NOT_EVALUABLE
@@ -368,6 +391,7 @@ def evaluate(c: Company, consistency_years: int = 0,
     else:
         # A snapshot track cleared — layer the balance-sheet and consistency gates.
         track = "Track A" if track_a else "Track B"
+        roic_hist = roic_history(c.history)
         bs_reasons = _balance_sheet_reasons(
             pass_leverage, pass_goodwill, roic_applied, pass_roic,
             net_debt, fcf, net_debt_to_fcf, goodwill_to_assets, roic,
@@ -415,6 +439,7 @@ def evaluate(c: Company, consistency_years: int = 0,
         pass_roic=pass_roic, roic_applied=roic_applied,
         status=status, track_a=track_a, track_b=track_b,
         track=track, reasons=reasons, consistency=consistency,
+        roic_history=roic_hist,
     )
 
 
@@ -500,6 +525,55 @@ def _rejection_reasons(
         # Unprofitable -> Track B only; rejection comes from the quality gate.
         reasons.append("fails Track B quality gate (adj FCF<=0 or dilution>=growth)")
     return reasons or ["did not clear either track"]
+
+
+# ---------------------------------------------------------------------------
+# ROIC history (advisory, multi-year durable-moat proxy) — pure, no IO
+# ---------------------------------------------------------------------------
+@dataclass
+class RoicHistory:
+    """Multi-year ROIC trajectory for one company — advisory only, never a gate.
+
+    A single-year ROIC is noisy (one restructuring charge or a cyclical margin
+    peak can swing it violently); the median over up to 10 years of history is
+    a much stronger proxy for a durable moat — a company that clears its cost
+    of capital by a wide, repeated spread rather than one great year.
+    """
+
+    median: float | None    # None when no year had a usable ROIC
+    years_used: int         # count of years actually used in the median
+    durable: bool           # median >= ROIC_DURABLE_MIN over >= ROIC_DURABLE_YEARS
+    note: str = ""          # e.g. "insufficient ROIC history" (advisory, informational)
+
+
+def roic_history(history: list[AnnualPeriod]) -> RoicHistory:
+    """Median ROIC (pre-tax operating income / invested capital) over available years.
+
+    Up to the last 10 annual periods are considered. A year is skipped (never
+    fabricated) when ``operating_income`` is absent, or when invested capital
+    (``total_debt + total_equity - cash_and_equivalents``) is <= 0 for that year.
+    Fewer than :data:`ROIC_HISTORY_MIN_YEARS` usable years is flagged as thin
+    evidence but is still reported honestly, never withheld or padded.
+    """
+    values: list[float] = []
+    for p in history[-10:]:
+        if p.operating_income is None:
+            continue
+        if p.total_debt is None or p.total_equity is None or p.cash_and_equivalents is None:
+            continue
+        invested_capital = p.total_debt + p.total_equity - p.cash_and_equivalents
+        if invested_capital <= 0:
+            continue
+        values.append(p.operating_income / invested_capital)
+
+    if not values:
+        return RoicHistory(None, 0, False, note="no usable ROIC years")
+
+    med = median(values)
+    years_used = len(values)
+    durable = med >= ROIC_DURABLE_MIN and years_used >= ROIC_DURABLE_YEARS
+    note = "insufficient ROIC history" if years_used < ROIC_HISTORY_MIN_YEARS else ""
+    return RoicHistory(med, years_used, durable, note=note)
 
 
 # ---------------------------------------------------------------------------

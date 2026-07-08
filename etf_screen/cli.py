@@ -228,11 +228,11 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
             _f(r.growth), _f(r.adj_margin), _f(r.rule40), _f(r.p_s, 1),
             _f(r.dilution), _f(r.sbc_pct), _peg(r.peg),
             _f(r.net_debt_to_fcf, 1), _pct(r.goodwill_to_assets, 0), _pct(r.roic),
-            export_mod.rule40_hist(r),
+            _roic_hist(r), export_mod.rule40_hist(r),
         ] for i, r in enumerate(survivors)]
         headers = ["#", "Ticker", "Company", "Sector", "Track", "Growth%",
                    "AdjFCF%", "Rule40", "P/S", "Dil%", "SBC%", "PEG",
-                   "NetDebt/FCF", "GW/Assets%", "ROIC%", "Rule40 Hist"]
+                   "NetDebt/FCF", "GW/Assets%", "ROIC%", "ROIC Med(y)", "Rule40 Hist"]
         print(tabulate(rows, headers=headers, floatfmt=".1f"))
     else:
         print("  (empty — a strict screen producing no survivors is a valid result)")
@@ -369,12 +369,20 @@ def _pct(x, nd: int = 1) -> str:
     return "N/A" if x is None or isnan(x) else f"{x * 100:.{nd}f}"
 
 
+def _roic_hist(r: Result) -> str:
+    """Render the multi-year ROIC-history annotation, e.g. '18.2 (7y)'."""
+    rh = r.roic_history
+    if rh is None or rh.median is None:
+        return "N/A"
+    return f"{rh.median * 100:.1f} ({rh.years_used}y)"
+
+
 def _short(s: str, n: int = 24) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
 def _flags(r: Result) -> str:
-    """Render basis / override / low-confidence annotations for a result line."""
+    """Render basis / override / low-confidence / advisory annotations for a result line."""
     tags = []
     if r.manual_override:
         tags.append("manual override: " + ", ".join(r.company.overridden_fields))
@@ -382,6 +390,8 @@ def _flags(r: Result) -> str:
         tags.append(f"basis: {r.basis}")
     if r.company.low_confidence:
         tags.append("low-confidence: " + ", ".join(r.company.low_confidence))
+    if r.roic_history and r.roic_history.durable:
+        tags.append("roic_durable")
     return f"  [{' | '.join(tags)}]" if tags else ""
 
 

@@ -22,6 +22,7 @@ COLUMNS = [
     "ticker", "name", "sector", "track", "status", "passed", "growth_pct",
     "adj_fcf_margin_pct", "rule40", "p_s", "ps_guardrail", "dilution_pct",
     "sbc_pct", "peg", "net_debt_to_fcf", "goodwill_to_assets", "roic",
+    "roic_median", "roic_years", "roic_durable",
     "net_income_ttm", "rule40_hist", "consistency",
     "sector_med_rule40", "sector_med_ps", "sector_med_peg",
     "basis", "sbc_assumed_zero", "manual_override", "reason", "low_confidence",
@@ -73,6 +74,20 @@ def consistency_status(r: Result) -> str:
     return r.consistency.status.name if r.consistency is not None else "—"
 
 
+def _roic_median(r: Result) -> str:
+    if r.roic_history is None or r.roic_history.median is None:
+        return "N/A"
+    return _num(r.roic_history.median * 100)
+
+
+def _roic_years(r: Result):
+    return r.roic_history.years_used if r.roic_history else ""
+
+
+def _roic_durable(r: Result):
+    return r.roic_history.durable if r.roic_history else False
+
+
 def _result_row(r: Result) -> dict:
     return {
         "ticker": r.ticker, "name": r.name, "sector": r.sector, "track": r.track,
@@ -82,6 +97,8 @@ def _result_row(r: Result) -> dict:
         "dilution_pct": _num(r.dilution), "sbc_pct": _num(r.sbc_pct),
         "peg": _num(r.peg), "net_debt_to_fcf": _num(r.net_debt_to_fcf),
         "goodwill_to_assets": _num(r.goodwill_to_assets), "roic": _num(r.roic),
+        "roic_median": _roic_median(r), "roic_years": _roic_years(r),
+        "roic_durable": _roic_durable(r),
         "net_income_ttm": _num(r.company.net_income_ttm),
         "rule40_hist": rule40_hist(r), "consistency": consistency_status(r),
         "sector_med_rule40": _sector_med(r, "rule40"),
