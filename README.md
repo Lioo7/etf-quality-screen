@@ -93,6 +93,22 @@ rescue:
 When multiple gates fail, a balance-sheet failure is definitive and takes
 precedence over the history checks in the verdict.
 
+**Watchlist — quality passes, valuation fails.** The most common screening
+outcome for a genuinely great company is "wonderful business, wrong price".
+A name that clears **every quality gate** (its would-be track, the
+balance-sheet gates, earnings quality, and the consistency gate) but fails
+**only** the valuation filters (P/S guardrail and/or a computable-but-failed
+PEG) is classified `WATCHLIST` instead of being discarded — reported in its own
+section and export rows with the **unlock price**: the price at which P/S would
+equal `0.5 × growth%` (and, where PEG was the blocker, the price at which PEG
+= 2.0), computed on the same share count and revenue base as the P/S itself.
+The buy trigger is computed on a calm day so a future dip doesn't have to be
+re-judged under FOMO. Boundaries: a name failing quality **and** valuation
+stays plain rejected; a profitable name whose PEG is N/A stays rejected (no
+price fixes missing estimates, and Track B stays barred); zero/negative growth
+→ unlock `N/A` (a cheap price can't fix a shrinking company — it must
+re-qualify on quality first). `WATCHLIST` names are never in the shortlist.
+
 **IPO seasoning.** A name listed within the last 12 months
 (`--ipo-seasoning-months`, `0` disables) is set aside as `RECENT_IPO` — never
 in the shortlist, reported in its own section like `INSUFFICIENT_HISTORY`.
@@ -434,15 +450,15 @@ consult a qualified professional before any financial decision.
 ## Development
 
 ```bash
-pytest -q          # 139 tests: acceptance fixtures, edge cases, data layer,
+pytest -q          # 151 tests: acceptance fixtures, edge cases, data layer,
                    # basis consistency, SBC-assumed-0, overrides, export,
                    # sector context (incl. the verdicts-unchanged regression),
                    # the issuer-holdings-CSV loader, the multi-year consistency
                    # gate (strict + trend), the balance-sheet gates, the
                    # pre-revenue firewall, the ROIC-history annotation, the
                    # earnings-quality gate, the gross-margin annotation, the
-                   # RECENT_IPO seasoning classification, and the entry-timing
-                   # annotations
+                   # RECENT_IPO seasoning classification, the entry-timing
+                   # annotations, and WATCHLIST mode (incl. unlock-price math)
 flake8 etf_screen tests
 ```
 

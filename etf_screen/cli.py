@@ -184,8 +184,9 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
     pre_revenue = [r for r in results if r.status is ScreenStatus.PRE_REVENUE]
     insufficient = [r for r in results if r.insufficient_history]
     recent_ipos = [r for r in results if r.recent_ipo]
+    watchlist = [r for r in results if r.watchlist]
     rejected = [r for r in results if not r.passed and not r.insufficient_history
-                and not r.recent_ipo
+                and not r.recent_ipo and not r.watchlist
                 and r.status is not ScreenStatus.PRE_REVENUE]
     sbc_assumed = [r for r in results if r.sbc_assumed_zero]
     bs_assumed = [r for r in results
@@ -209,6 +210,7 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
     print(f"  evaluated       : {len(results)}")
     print(f"  could not source: {len(skipped)}")
     print(f"  passed          : {len(survivors)}")
+    print(f"  watchlist       : {len(watchlist)} (quality passed, valuation failed)")
     print(f"  rejected        : {len(rejected)}")
     if pre_revenue:
         print(f"  pre-revenue     : {len(pre_revenue)} (firewall — no metric math)")
@@ -267,6 +269,15 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
                   f"(Rule40 {_f(r.rule40)}, P/S {_f(r.p_s, 1)} vs guardrail "
                   f"{_f(r.ps_guardrail, 1)}, SBC {_f(r.sbc_pct)}%"
                   f"{', PEG ' + _peg(r.peg) if r.peg else ''}){_flags(r)}")
+
+    # --- watchlist: quality passed, valuation failed — pre-computed buy triggers ---
+    if watchlist:
+        print(f"\nWATCHLIST ({len(watchlist)}) — wonderful business, wrong price; "
+              f"unlock = the price at which the failed valuation filter clears "
+              f"(computed on a calm day, not under FOMO):")
+        for r in watchlist:
+            print(f"  {r.ticker} ({_short(r.name)}): {'; '.join(r.reasons)}"
+                  f" -> {_unlocks(r)}{_flags(r)}")
 
     if rejected:
         print("\nWhy names were rejected:")
@@ -408,6 +419,18 @@ def _eq_ratio(r: Result) -> str:
     if not r.earnings_quality_applicable or r.earnings_quality_ratio is None:
         return "N/A"
     return f"{r.earnings_quality_ratio:.2f} ({r.earnings_quality_years}y)"
+
+
+def _unlocks(r: Result) -> str:
+    """Render a watchlist name's buy trigger(s), e.g. 'unlock: P/S $172.10, PEG $186.40'."""
+    parts = []
+    if r.unlock_ps_price is not None:
+        parts.append(f"P/S ${r.unlock_ps_price:,.2f}")
+    if r.unlock_peg_price is not None:
+        parts.append(f"PEG ${r.unlock_peg_price:,.2f}")
+    if not parts:
+        return "unlock N/A (growth <= 0 — must re-qualify on quality, not price)"
+    return "unlock: " + ", ".join(parts)
 
 
 def _gm(r: Result) -> str:

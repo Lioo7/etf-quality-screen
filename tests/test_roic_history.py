@@ -99,12 +99,13 @@ def test_snapshot_qualifier_gets_roic_history_attached():
     assert r.roic_history.durable
 
 
-def test_non_qualifier_has_no_roic_history():
-    # PriceyButProfitable-style rejection: never reaches a snapshot qualifier.
-    c = make("BAD", 20000, 16000, 7000, 1000, 1200, 1500, 1510, 200000, 60, 12,
-             net_income=4000)
+def test_quality_failer_has_no_roic_history():
+    # A Rule-of-40 failer never clears quality (no track, no WATCHLIST
+    # candidacy), so the advisory annotation is never attached.
+    c = make("BAD", 50000, 46300, 18000, 3000, 2000, 2000, 2000, 600000, 24, 9,
+             net_income=9000)
     r = evaluate(c)
-    assert not r.passed
+    assert not r.passed and not r.watchlist
     assert r.roic_history is None
 
 

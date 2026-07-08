@@ -91,11 +91,13 @@ def test_margin_profile_attached_for_snapshot_qualifier():
     assert r.margin_profile is not None and r.margin_profile.pricing_power
 
 
-def test_non_qualifier_has_no_margin_profile():
-    c = make("BAD", 20000, 16000, 7000, 1000, 1200, 1500, 1510, 200000, 60, 12,
-             net_income=4000)
+def test_quality_failer_has_no_margin_profile():
+    # A Rule-of-40 failer never clears quality (no track, no WATCHLIST
+    # candidacy), so the advisory annotation is never attached.
+    c = make("BAD", 50000, 46300, 18000, 3000, 2000, 2000, 2000, 600000, 24, 9,
+             net_income=9000)
     r = evaluate(c)
-    assert not r.passed
+    assert not r.passed and not r.watchlist
     assert r.margin_profile is None
 
 

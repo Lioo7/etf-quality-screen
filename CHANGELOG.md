@@ -16,6 +16,11 @@
   over up to 10 annual years; GM ≥ 40% with stddev < 5pp over ≥ 5 years earns a
   `pricing_power` tag. Names without a cost-of-revenue line (banks, insurers)
   are `gm_not_applicable`. Informational columns only — never a gate.
+- **Watchlist mode.** Names passing every quality gate but failing only the
+  valuation filters are classified `WATCHLIST` (own section + export rows)
+  with pre-computed **unlock prices** — the price at which P/S = 0.5 × growth%
+  and/or PEG = 2.0. Quality-and-valuation failers stay plain rejected;
+  profitable PEG-N/A names stay barred; zero/negative growth → unlock N/A.
 - **Entry-timing annotations (informational).** `ATH%` (distance from the
   all-time high) and `3M%` (trailing 3-month return) from split/dividend-
   adjusted closes; `HOT` tag when the 3-month return exceeds +50% within 20%

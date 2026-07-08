@@ -26,6 +26,7 @@ COLUMNS = [
     "earnings_quality_ratio", "earnings_quality_years", "earnings_quality_applicable",
     "gm_latest", "gm_stddev", "gm_years", "pricing_power", "gm_not_applicable",
     "pct_off_ath", "three_month_return", "hot", "price_history_years",
+    "unlock_ps_price", "unlock_peg_price",
     "net_income_ttm", "rule40_hist", "consistency", "ipo_date",
     "sector_med_rule40", "sector_med_ps", "sector_med_peg",
     "basis", "sbc_assumed_zero", "manual_override", "reason", "low_confidence",
@@ -119,6 +120,8 @@ def _result_row(r: Result) -> dict:
         "gm_not_applicable": bool(r.margin_profile and r.margin_profile.not_applicable),
         "pct_off_ath": _num(r.pct_off_ath), "three_month_return": _num(r.three_month_return),
         "hot": r.hot, "price_history_years": _num(r.company.price_history_years, 1),
+        "unlock_ps_price": _num(r.unlock_ps_price),
+        "unlock_peg_price": _num(r.unlock_peg_price),
         "net_income_ttm": _num(r.company.net_income_ttm),
         "rule40_hist": rule40_hist(r), "consistency": consistency_status(r),
         "ipo_date": r.company.ipo_date or "unknown",
@@ -140,8 +143,9 @@ def _skipped_row(ticker: str, name: str, reason: str) -> dict:
 
 
 def build_rows(results: list[Result], skipped, names: dict[str, str]) -> list[dict]:
-    """Survivors+rejected first (passed first, then by Rule of 40), then skipped."""
-    ordered = sorted(results, key=lambda r: (not r.passed, -_safe(r.rule40)))
+    """Survivors, then watchlist, then the rest (by Rule of 40), then skipped."""
+    ordered = sorted(results,
+                     key=lambda r: (not r.passed, not r.watchlist, -_safe(r.rule40)))
     rows = [_result_row(r) for r in ordered]
     rows += [_skipped_row(s.ticker, names.get(s.ticker, s.ticker), s.reason)
              for s in skipped]

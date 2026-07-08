@@ -87,6 +87,7 @@ class ScreenStatus(Enum):
     INSUFFICIENT_HISTORY = auto()  # snapshot qualifier demoted for too little annual history
     NOT_EVALUABLE = auto()         # a divide-by-zero guard tripped (missing/zero denominator)
     RECENT_IPO = auto()            # listed within the seasoning window — never in the shortlist
+    WATCHLIST = auto()             # every quality gate passed; ONLY valuation blocked the pass
 
 
 @dataclass
@@ -249,6 +250,12 @@ class Result:
     three_month_return: float | None    # trailing 3-month total return, % (None: young/no data)
     hot: bool                           # 3-mo return > +50% AND within 20% of ATH
 
+    # watchlist unlock prices (set ONLY on a WATCHLIST result; else None) — the
+    # pre-computed buy triggers: the price at which the failed valuation filter
+    # would clear, on the same share count / revenue base as the P/S itself
+    unlock_ps_price: float | None       # price where P/S == 0.5 x growth% (None: growth <= 0)
+    unlock_peg_price: float | None      # price where PEG == 2.0 (None: PEG wasn't the blocker)
+
     # verdict
     status: ScreenStatus
     track_a: bool
@@ -290,6 +297,11 @@ class Result:
     @property
     def recent_ipo(self) -> bool:
         return self.status is ScreenStatus.RECENT_IPO
+
+    @property
+    def watchlist(self) -> bool:
+        """Quality passed, only valuation failed — a patience case with a buy trigger."""
+        return self.status is ScreenStatus.WATCHLIST
 
     @property
     def ipo_date_unknown(self) -> bool:
@@ -426,9 +438,14 @@ def evaluate(c: Company, consistency_years: int = 0,
     # CRITICAL: routing is gated on GAAP profitability, NOT on whether PEG is
     # computable. A profitable name must clear PEG via Track A (and is barred
     # from Track B even when PEG is N/A); only a GAAP-unprofitable name is
-    # eligible for the PEG-exempt Track B.
-    track_a = gaap_profitable and pass_sbc and pass_rule40 and pass_ps and pass_peg
-    track_b = (not gaap_profitable) and pass_sbc and pass_rule40 and pass_ps and quality_gate
+    # eligible for the PEG-exempt Track B. The quality_* flags are the same
+    # routing with the valuation filters (P/S, PEG) removed — they exist ONLY
+    # to detect the WATCHLIST case (quality passed, valuation the sole blocker)
+    # and never loosen the tracks themselves.
+    quality_a = gaap_profitable and pass_sbc and pass_rule40
+    quality_b = (not gaap_profitable) and pass_sbc and pass_rule40 and quality_gate
+    track_a = quality_a and pass_ps and pass_peg
+    track_b = quality_b and pass_ps
 
     # Balance-sheet gates. Leverage + goodwill apply to ALL snapshot qualifiers;
     # ROIC is gated only for a Track-A name under strict mode (advisory otherwise).
@@ -449,6 +466,8 @@ def evaluate(c: Company, consistency_years: int = 0,
     consistency: ConsistencyResult | None = None
     roic_hist: RoicHistory | None = None
     margin_prof: MarginProfile | None = None
+    unlock_ps_price: float | None = None
+    unlock_peg_price: float | None = None
 
     if not evaluable:
         status = ScreenStatus.NOT_EVALUABLE
@@ -461,6 +480,39 @@ def evaluate(c: Company, consistency_years: int = 0,
             gaap_profitable, pass_sbc, pass_rule40, pass_ps, quality_gate,
             sbc_pct, rule40, p_s, growth, peg,
         )
+        # WATCHLIST candidacy: every quality gate passed and ONLY valuation
+        # (P/S and/or a computable-but-failed PEG) blocked a track. The same
+        # balance-sheet / earnings-quality / consistency gates are then run on
+        # the would-be track — a name failing any of those stays plain REJECTED
+        # (per the fixed architecture, a snapshot failer's hypothetical gates
+        # are moot, so their outcomes are not attached or reported). A
+        # profitable name whose PEG is N/A is NOT a candidate: no price fixes
+        # missing forward estimates, and Track B stays barred.
+        eligible = (quality_a and peg is not None) or quality_b
+        if eligible:
+            wl_roic_applied = quality_a and consistency_mode == "strict"
+            wl_bs_reasons = _balance_sheet_reasons(
+                pass_leverage, pass_goodwill, wl_roic_applied, pass_roic,
+                net_debt, fcf, net_debt_to_fcf, goodwill_to_assets, roic,
+                eq_applicable, pass_earnings_quality, eq_ratio, eq_years,
+            )
+            wl_consistency = None
+            if consistency_years > 0:
+                wl_consistency = (
+                    track_a_consistency(c.history, consistency_years, consistency_mode)
+                    if quality_a else track_b_consistency(c.history, consistency_years)
+                )
+            if not wl_bs_reasons and (
+                wl_consistency is None
+                or wl_consistency.status is ConsistencyStatus.PASS
+            ):
+                status = ScreenStatus.WATCHLIST
+                consistency = wl_consistency
+                roic_hist = roic_history(c.history)
+                margin_prof = margin_profile(c.history)
+                unlock_ps_price, unlock_peg_price = _unlock_prices(
+                    c, growth, p_s, peg, quality_a, pass_ps, pass_peg,
+                )
     else:
         # A snapshot track cleared — layer the balance-sheet and consistency gates.
         track = "Track A" if track_a else "Track B"
@@ -527,10 +579,42 @@ def evaluate(c: Company, consistency_years: int = 0,
         earnings_quality_applicable=eq_applicable,
         earnings_quality_ratio=eq_ratio, earnings_quality_years=eq_years,
         pct_off_ath=pct_off_ath, three_month_return=three_month_return, hot=hot,
+        unlock_ps_price=unlock_ps_price, unlock_peg_price=unlock_peg_price,
         status=status, track_a=track_a, track_b=track_b,
         track=track, reasons=reasons, consistency=consistency,
         roic_history=roic_hist, margin_profile=margin_prof,
     )
+
+
+def _unlock_prices(
+    c: Company, growth: float, p_s: float, peg: float | None,
+    track_a_like: bool, pass_ps: bool, pass_peg: bool,
+) -> tuple[float | None, float | None]:
+    """``(unlock_ps_price, unlock_peg_price)`` — the WATCHLIST buy triggers.
+
+    Both filters scale linearly with price on the SAME share count / revenue
+    base as the P/S computation itself (implied price = market_cap / diluted
+    shares), so each unlock is the current implied price scaled by the ratio of
+    the filter's ceiling to its current value:
+
+    * P/S:  price where ``P/S == 0.5 x growth%`` — N/A when growth <= 0 (the
+      guardrail is then non-positive: no price fixes a shrinking company, it
+      must re-qualify on quality first).
+    * PEG:  price where ``PEG == 2.0`` — only when PEG was actually the blocker
+      (a Track-B-like name has no PEG concept).
+
+    A filter that already passes needs no unlock and stays None.
+    """
+    if not c.diluted_shares_now or p_s <= 0:
+        return None, None
+    implied_price = c.market_cap / c.diluted_shares_now
+    unlock_ps = None
+    if not pass_ps and growth > 0:
+        unlock_ps = implied_price * (PS_GUARDRAIL_FACTOR * growth / p_s)
+    unlock_peg = None
+    if track_a_like and not pass_peg and peg is not None and peg > 0:
+        unlock_peg = implied_price * (PEG_MAX / peg)
+    return unlock_ps, unlock_peg
 
 
 def _entry_timing(c: Company) -> tuple[float | None, float | None, bool]:
@@ -599,6 +683,7 @@ def _pre_revenue_result(c: Company) -> Result:
         pass_earnings_quality=False, earnings_quality_applicable=False,
         earnings_quality_ratio=None, earnings_quality_years=0,
         pct_off_ath=None, three_month_return=None, hot=False,
+        unlock_ps_price=None, unlock_peg_price=None,
         status=ScreenStatus.PRE_REVENUE, track_a=False, track_b=False,
         track="—", reasons=["pre-revenue (revenue_ttm <= 0)"], consistency=None,
     )
