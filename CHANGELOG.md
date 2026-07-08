@@ -1,6 +1,6 @@
 # Changelog
 
-## v0.2 (in progress)
+## v0.2 — 2026-07-08
 
 - **README "Reading a result" walkthrough.** One full mock run exercising
   every terminal state (PASS with all annotations, WATCHLIST with unlock
