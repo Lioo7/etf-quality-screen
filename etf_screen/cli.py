@@ -22,7 +22,7 @@ from tabulate import tabulate
 
 from . import __version__, export as export_mod
 from .cache import DiskCache
-from .constituents import holdings_from_csv, resolve
+from .constituents import holdings_from_csv, resolve, tickers_from_file
 from .overrides import apply_override, company_from_override, load_overrides
 from .providers import PROVIDERS, DataProvider, DataUnavailable
 from .screen import Result, ScreenStatus, annotate_sector_context, evaluate, rank
@@ -48,6 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "SSGA, ...); overrides --universe")
     p.add_argument("--tickers",
                    help="comma-separated tickers to screen instead of a universe")
+    p.add_argument("--tickers-file", default=None,
+                   help="path to a curated ticker-list file (one per line, # comments; "
+                        "see universes/); same role as --tickers")
     p.add_argument("--limit", type=int, default=None,
                    help="screen at most N tickers (useful for cheap validation)")
     p.add_argument("--refresh", action="store_true",
@@ -84,11 +87,17 @@ def build_parser() -> argparse.ArgumentParser:
 def _resolve_universe(args) -> tuple[list[str], str, str, bool, dict[str, str], str]:
     """Return (tickers, source, as_of, is_stale, names, label) for the universe.
 
-    Precedence: explicit ``--tickers`` > a ``--holdings`` CSV > a named ``--universe``.
+    Precedence: explicit ``--tickers`` > a ``--tickers-file`` list > a
+    ``--holdings`` CSV > a named ``--universe``.
     """
     if args.tickers:
         tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
         return tickers, "explicit --tickers", date.today().isoformat(), False, {}, "tickers"
+    if args.tickers_file:
+        path = Path(args.tickers_file)
+        tickers = tickers_from_file(path)
+        return (tickers, f"tickers file: {path.name}", date.today().isoformat(),
+                False, {}, path.stem)
     if args.holdings:
         h = holdings_from_csv(args.holdings)
         return h.tickers, h.source, h.as_of, h.is_stale, h.names, h.etf.lower()

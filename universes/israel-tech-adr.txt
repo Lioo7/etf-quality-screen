@@ -1,0 +1,27 @@
+# Israel tech — US-listed (NASDAQ/NYSE)
+#
+# Thesis: Israel produces a disproportionate stream of globally competitive
+# software / cybersecurity / semiconductor businesses, but screening the TASE
+# directly means thin yfinance fundamentals and currency noise. These names
+# all carry primary or dual US listings with US-quality filings, so the
+# screen's inputs (TTM statements, forward estimates, balance sheets) are as
+# reliable as for any domestic name. Curated by thesis, not exhaustive —
+# add/remove deliberately, one line at a time.
+#
+# Format: one ticker per line; '#' starts a comment (full-line or trailing).
+
+CHKP    # Check Point — cybersecurity, the original Israeli compounder
+CYBR    # CyberArk — privileged access management
+NICE    # NICE — CX / financial-crime software
+MNDY    # monday.com — work management SaaS
+WIX     # Wix — website platform
+GLBE    # Global-e — cross-border e-commerce enablement
+FVRR    # Fiverr — freelance marketplace
+SEDG    # SolarEdge — solar inverters (cyclical; expect screen rejections)
+TSEM    # Tower Semiconductor — specialty foundry
+CAMT    # Camtek — semiconductor inspection
+NVMI    # Nova — semiconductor metrology
+KRNT    # Kornit Digital — digital textile printing
+ESLT    # Elbit Systems — defense (dual-listed)
+SMWB    # Similarweb — digital intelligence
+PERI    # Perion — ad tech

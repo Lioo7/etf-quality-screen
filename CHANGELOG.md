@@ -16,6 +16,11 @@
   over up to 10 annual years; GM ≥ 40% with stddev < 5pp over ≥ 5 years earns a
   `pricing_power` tag. Names without a cost-of-revenue line (banks, insurers)
   are `gm_not_applicable`. Informational columns only — never a gate.
+- **Curated ticker-list files (`--tickers-file`).** Plain-text thesis-driven
+  universes (one ticker per line, `#` comments); two starter lists committed
+  under `universes/` (US-listed Israeli tech; Japanese automation ADRs, with
+  the OTC data-quality caveat documented in-file). Duplicates dropped with a
+  note; empty files and junk lines are loud errors.
 - **Watchlist mode.** Names passing every quality gate but failing only the
   valuation filters are classified `WATCHLIST` (own section + export rows)
   with pre-computed **unlock prices** — the price at which P/S = 0.5 × growth%

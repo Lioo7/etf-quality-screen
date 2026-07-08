@@ -214,6 +214,46 @@ def holdings_from_csv(path: str | Path) -> Holdings:
     )
 
 
+def tickers_from_file(path: str | Path) -> list[str]:
+    """Read a curated ticker-list file: one ticker per line, ``#`` comments allowed.
+
+    The plain-text universe format for thesis-driven lists (see ``universes/``):
+    screening whole foreign exchanges multiplies data-quality problems for
+    negligible yield, so coverage is extended through deliberate, curated ADR
+    lists instead. Deliberately minimal — no network, no schema:
+
+    * blank lines and ``#`` comments (full-line or trailing) are ignored;
+    * tickers are uppercased and de-duplicated (a note is printed on duplicates);
+    * anything that doesn't look like a ticker raises (a typo in a hand-curated
+      file should fail loudly, not silently screen the wrong universe);
+    * an empty resulting list is an error, never a silent empty run.
+    """
+    p = Path(path)
+    if not p.exists():
+        raise ValueError(f"tickers file not found: {p}")
+    tickers: list[str] = []
+    seen: set[str] = set()
+    dupes: list[str] = []
+    for lineno, raw in enumerate(p.read_text().splitlines(), start=1):
+        sym = raw.split("#", 1)[0].strip().upper()
+        if not sym:
+            continue
+        if not _looks_like_ticker(sym.replace("-", "")):
+            raise ValueError(f"{p.name}:{lineno}: '{sym}' does not look like a ticker")
+        norm = _normalize(sym)
+        if norm in seen:
+            dupes.append(norm)
+            continue
+        seen.add(norm)
+        tickers.append(norm)
+    if dupes:
+        print(f"NOTE: {p.name}: dropped duplicate ticker(s): {', '.join(dupes)}",
+              file=sys.stderr)
+    if not tickers:
+        raise ValueError(f"{p.name}: no tickers found (file is empty or all comments)")
+    return tickers
+
+
 def _find_header(rows: list[list[str]]) -> tuple[int | None, list[str]]:
     """Locate the header row; issuer files often carry preamble lines above it."""
     for i, row in enumerate(rows):

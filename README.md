@@ -185,7 +185,7 @@ python -m etf_screen.cli --universe qqq --consistency-years 0
 ```
 
 Flags: `--provider {yfinance,fmp,mock}` · `--universe <etf>` · `--holdings PATH`
-· `--tickers a,b,c` · `--limit N` · `--refresh` (ignore cache) · `--no-cache`
+· `--tickers a,b,c` · `--tickers-file PATH` · `--limit N` · `--refresh` (ignore cache) · `--no-cache`
 · `--throttle SECONDS` · `--overrides PATH` · `--export {csv,md}` · `--out PATH`
 · `--sector-context` · `--rank {rule40,sector-relative}`
 · `--consistency-years N` (default 3; `0` bypasses the history gate)
@@ -380,7 +380,34 @@ rows above the header) and discards anything that isn't a ticker — blank rows,
 footer disclaimers, cash and derivative lines. Provenance (`as-of` date, fund
 name) is read from the file's own columns when present, so the run is properly
 dated. No network, no API key, no per-issuer configuration. Precedence is
-`--tickers` > `--holdings` > `--universe`.
+`--tickers` > `--tickers-file` > `--holdings` > `--universe`.
+
+### Curated ticker-list files (`--tickers-file`)
+
+Universes should follow *theses*, not flags on a map. Scanning whole foreign
+exchanges multiplies data-quality problems (thin yfinance fundamentals for
+non-US listings) for negligible shortlist yield, so coverage is extended
+through deliberate, hand-curated lists instead — plain text, one ticker per
+line, `#` comments allowed:
+
+```bash
+python -m etf_screen.cli --tickers-file universes/israel-tech-adr.txt
+```
+
+Two starter lists are committed under [`universes/`](universes/), each with a
+header comment stating its thesis:
+
+- **[`israel-tech-adr.txt`](universes/israel-tech-adr.txt)** — US-listed
+  Israeli tech (cybersecurity, SaaS, semis). All primary/dual US listings, so
+  the data is US-filing quality.
+- **[`japan-automation-adr.txt`](universes/japan-automation-adr.txt)** —
+  Japanese factory-automation/robotics ADRs. Mostly unsponsored OTC listings:
+  expect a high "could not source" rate and assumed-0 flags — that trade-off
+  is documented in the file itself and is the tool being honest, not broken.
+
+Duplicates are dropped with a note; an empty file is a loud error, never a
+silent empty run; a junk line raises with its line number (a typo in a
+hand-curated file should fail, not screen the wrong universe).
 
 > Holdings files are point-in-time snapshots and (for active funds) change often
 > — the export header records exactly which file and as-of date produced a run.
@@ -450,7 +477,7 @@ consult a qualified professional before any financial decision.
 ## Development
 
 ```bash
-pytest -q          # 151 tests: acceptance fixtures, edge cases, data layer,
+pytest -q          # 160 tests: acceptance fixtures, edge cases, data layer,
                    # basis consistency, SBC-assumed-0, overrides, export,
                    # sector context (incl. the verdicts-unchanged regression),
                    # the issuer-holdings-CSV loader, the multi-year consistency
@@ -458,7 +485,8 @@ pytest -q          # 151 tests: acceptance fixtures, edge cases, data layer,
                    # pre-revenue firewall, the ROIC-history annotation, the
                    # earnings-quality gate, the gross-margin annotation, the
                    # RECENT_IPO seasoning classification, the entry-timing
-                   # annotations, and WATCHLIST mode (incl. unlock-price math)
+                   # annotations, WATCHLIST mode (incl. unlock-price math), and
+                   # the curated ticker-list loader
 flake8 etf_screen tests
 ```
 
