@@ -18,6 +18,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from math import isnan, nan
+from calendar import monthrange
+from datetime import date
 from statistics import mean, median, pstdev
 
 # --- thresholds (the validated spec) ---------------------------------------
@@ -49,6 +51,9 @@ PRICING_POWER_GM_MIN = 40.0       # gross margin % floor
 PRICING_POWER_STDDEV_MAX = 5.0    # gross margin stddev ceiling, percentage points
 PRICING_POWER_MIN_YEARS = 5       # minimum usable years to claim pricing power
 
+# --- IPO seasoning (classification; keeps unseasoned listings off the shortlist) ---
+IPO_SEASONING_MONTHS = 12   # default; CLI-configurable via --ipo-seasoning-months
+
 # --- sector context (INFORMATIONAL ONLY — never gates a verdict) -----------
 SECTOR_MIN_PEERS = 5    # don't compute a sector median below this many peers
 # Result attributes whose per-sector median we report (adj_fcf_margin == adj_margin).
@@ -77,6 +82,7 @@ class ScreenStatus(Enum):
     PRE_REVENUE = auto()           # revenue_ttm <= 0 — metric math never ran
     INSUFFICIENT_HISTORY = auto()  # snapshot qualifier demoted for too little annual history
     NOT_EVALUABLE = auto()         # a divide-by-zero guard tripped (missing/zero denominator)
+    RECENT_IPO = auto()            # listed within the seasoning window — never in the shortlist
 
 
 @dataclass
@@ -148,6 +154,9 @@ class Company:
     overridden_fields: list[str] = field(default_factory=list)  # from overrides.json
     sector: str = "Unknown"     # GICS-style sector bucket from the data layer
     industry: str = ""          # finer sub-sector (optional)
+    # First trading date, ISO "YYYY-MM-DD". None = unknown (never guessed): the
+    # name is screened normally and flagged ipo_date_unknown, NOT classified.
+    ipo_date: str | None = None
     # Annual statement history (OLDEST -> NEWEST) for the multi-year consistency
     # gate. Empty when the data layer could not source a contiguous run.
     history: list[AnnualPeriod] = field(default_factory=list)
@@ -261,6 +270,15 @@ class Result:
         return self.status is ScreenStatus.INSUFFICIENT_HISTORY
 
     @property
+    def recent_ipo(self) -> bool:
+        return self.status is ScreenStatus.RECENT_IPO
+
+    @property
+    def ipo_date_unknown(self) -> bool:
+        """The source exposed no first-trading date — screened normally, flagged."""
+        return self.company.ipo_date is None
+
+    @property
     def ticker(self) -> str:
         return self.company.ticker
 
@@ -312,19 +330,27 @@ def _period_metrics(
 
 
 def evaluate(c: Company, consistency_years: int = 0,
-             consistency_mode: str = "strict") -> Result:
+             consistency_mode: str = "strict",
+             ipo_seasoning_months: int = IPO_SEASONING_MONTHS,
+             today: date | None = None) -> Result:
     """Apply the screen to one company and return a fully populated Result.
 
     Order of operations: a **pre-revenue firewall** fires first (no metric math
     on a name with no revenue); then the snapshot four-filter / two-track routing
     (UNCHANGED); then — only for a snapshot qualifier — the current-snapshot
-    balance-sheet gates and the multi-year consistency gate.
+    balance-sheet gates and the multi-year consistency gate. Finally, a name
+    whose first trading date falls inside the last ``ipo_seasoning_months`` is
+    reclassified ``RECENT_IPO`` regardless of the underlying verdict — recent
+    IPOs structurally break the history-based inputs and carry hostile base
+    rates, so they are set aside visibly rather than screened as normal names
+    (an unknown IPO date is flagged, never guessed).
 
     ``consistency_years`` of 0 (the default) bypasses the historical gate while
     leaving the pre-revenue and balance-sheet gates active. ``consistency_mode``
     selects the Track-A durability rule (``"strict"`` = Rule of 40 in every year,
     the default for library callers; ``"trend"`` = trajectory-aware). Track B is
-    unaffected by the mode.
+    unaffected by the mode. ``today`` exists so the pure module stays testable
+    without patching the clock; it defaults to the real current date.
     """
     # 1. Pre-revenue firewall — the FIRST check, before any metric math.
     if c.revenue_ttm <= 0:
@@ -454,6 +480,17 @@ def evaluate(c: Company, consistency_years: int = 0,
             status = ScreenStatus.PASS
             reasons = []
 
+    # 3. IPO-seasoning override — LAST, unconditional (mirrors how
+    # INSUFFICIENT_HISTORY keeps a name out of the shortlist): whatever the
+    # gates decided, an unseasoned listing is reported in its own section.
+    if _ipo_is_recent(c.ipo_date, ipo_seasoning_months, today or date.today()):
+        status = ScreenStatus.RECENT_IPO
+        track = "—"
+        reasons = [
+            f"recent IPO (listed {c.ipo_date}, "
+            f"< {ipo_seasoning_months} mo seasoning)"
+        ]
+
     return Result(
         company=c,
         growth=growth, fcf=fcf, adj_fcf=adj_fcf, adj_margin=adj_margin,
@@ -471,6 +508,31 @@ def evaluate(c: Company, consistency_years: int = 0,
         track=track, reasons=reasons, consistency=consistency,
         roic_history=roic_hist, margin_profile=margin_prof,
     )
+
+
+def _months_before(today: date, months: int) -> date:
+    """The calendar date ``months`` months before ``today`` (day clamped to month end)."""
+    total = today.year * 12 + (today.month - 1) - months
+    year, month0 = divmod(total, 12)
+    month = month0 + 1
+    day = min(today.day, monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def _ipo_is_recent(ipo_date: str | None, months: int, today: date) -> bool:
+    """True when a parseable first-trading date falls inside the seasoning window.
+
+    ``None`` (unknown) and unparseable dates are NOT recent — never guess; such
+    names are screened normally and surfaced via ``Result.ipo_date_unknown``.
+    A non-positive ``months`` disables the check entirely.
+    """
+    if ipo_date is None or months <= 0:
+        return False
+    try:
+        listed = date.fromisoformat(str(ipo_date)[:10])
+    except ValueError:
+        return False
+    return listed > _months_before(today, months)
 
 
 def _pre_revenue_result(c: Company) -> Result:

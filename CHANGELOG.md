@@ -16,3 +16,8 @@
   over up to 10 annual years; GM ≥ 40% with stddev < 5pp over ≥ 5 years earns a
   `pricing_power` tag. Names without a cost-of-revenue line (banks, insurers)
   are `gm_not_applicable`. Informational columns only — never a gate.
+- **`RECENT_IPO` classification.** Names listed within the last 12 months
+  (`--ipo-seasoning-months`, `0` disables) are set aside in their own section,
+  never in the shortlist — unseasoned listings break the history-based inputs
+  and carry hostile base rates. Unknown first-trading date → screened normally
+  and flagged `ipo_date_unknown`, never guessed.

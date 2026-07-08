@@ -25,7 +25,7 @@ COLUMNS = [
     "roic_median", "roic_years", "roic_durable",
     "earnings_quality_ratio", "earnings_quality_years", "earnings_quality_applicable",
     "gm_latest", "gm_stddev", "gm_years", "pricing_power", "gm_not_applicable",
-    "net_income_ttm", "rule40_hist", "consistency",
+    "net_income_ttm", "rule40_hist", "consistency", "ipo_date",
     "sector_med_rule40", "sector_med_ps", "sector_med_peg",
     "basis", "sbc_assumed_zero", "manual_override", "reason", "low_confidence",
 ]
@@ -118,6 +118,7 @@ def _result_row(r: Result) -> dict:
         "gm_not_applicable": bool(r.margin_profile and r.margin_profile.not_applicable),
         "net_income_ttm": _num(r.company.net_income_ttm),
         "rule40_hist": rule40_hist(r), "consistency": consistency_status(r),
+        "ipo_date": r.company.ipo_date or "unknown",
         "sector_med_rule40": _sector_med(r, "rule40"),
         "sector_med_ps": _sector_med(r, "p_s"), "sector_med_peg": _sector_med(r, "peg"),
         "basis": r.basis,

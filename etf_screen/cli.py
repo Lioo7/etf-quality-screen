@@ -75,6 +75,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Track-A durability rule: 'trend' (default, trajectory-aware "
                         "— recency anchor + average + no lumpy collapse) or 'strict' "
                         "(Rule of 40 in every year). Track B is unaffected.")
+    p.add_argument("--ipo-seasoning-months", type=int, default=12,
+                   help="names listed within the last N months are set aside as "
+                        "RECENT_IPO, never in the shortlist (default: 12; 0 disables)")
     return p
 
 
@@ -105,14 +108,15 @@ def _make_provider(args) -> DataProvider:
 
 
 def _screen_one(provider, ticker, override, consistency_years=0,
-                consistency_mode="trend") -> Result | Skipped:
+                consistency_mode="trend", ipo_seasoning_months=12) -> Result | Skipped:
     """Fetch + (optionally override) + evaluate one ticker, or report it skipped."""
     try:
         company = provider.fetch(ticker)
         if override:
             company = apply_override(company, override)
         return evaluate(company, consistency_years=consistency_years,
-                        consistency_mode=consistency_mode)
+                        consistency_mode=consistency_mode,
+                        ipo_seasoning_months=ipo_seasoning_months)
     except DataUnavailable as exc:
         if override:  # provider had nothing, but the user supplied verified data
             rescued = company_from_override(ticker, override)
@@ -120,7 +124,8 @@ def _screen_one(provider, ticker, override, consistency_years=0,
                 # An override-rescued name carries no annual history, so the gate
                 # will route it to INSUFFICIENT_HISTORY when enabled.
                 return evaluate(rescued, consistency_years=consistency_years,
-                                consistency_mode=consistency_mode)
+                                consistency_mode=consistency_mode,
+                                ipo_seasoning_months=ipo_seasoning_months)
         return Skipped(ticker, str(exc))
     except Exception as exc:  # unexpected provider/parse error -> report, skip
         return Skipped(ticker, f"unexpected error: {exc}")
@@ -142,7 +147,8 @@ def run(args) -> int:
     for i, ticker in enumerate(tickers):
         outcome = _screen_one(provider, ticker, overrides.get(ticker),
                               consistency_years=args.consistency_years,
-                              consistency_mode=args.consistency_mode)
+                              consistency_mode=args.consistency_mode,
+                              ipo_seasoning_months=args.ipo_seasoning_months)
         (skipped if isinstance(outcome, Skipped) else results).append(outcome)
         if args.throttle and i < len(tickers) - 1:
             time.sleep(args.throttle)
@@ -172,11 +178,14 @@ def _do_export(args, source, as_of, results, skipped, names, label) -> None:
 def _report(args, source, as_of, stale, tickers, results, skipped, names,
             sector_stats, label) -> None:
     survivors = rank(results, mode=args.rank)
-    # PRE_REVENUE and INSUFFICIENT_HISTORY names each get their own section; keep
-    # them out of the ordinary rejection list (a failed-gate name stays a normal reject).
+    # PRE_REVENUE, INSUFFICIENT_HISTORY, and RECENT_IPO names each get their own
+    # section; keep them out of the ordinary rejection list (a failed-gate name
+    # stays a normal reject).
     pre_revenue = [r for r in results if r.status is ScreenStatus.PRE_REVENUE]
     insufficient = [r for r in results if r.insufficient_history]
+    recent_ipos = [r for r in results if r.recent_ipo]
     rejected = [r for r in results if not r.passed and not r.insufficient_history
+                and not r.recent_ipo
                 and r.status is not ScreenStatus.PRE_REVENUE]
     sbc_assumed = [r for r in results if r.sbc_assumed_zero]
     bs_assumed = [r for r in results
@@ -203,6 +212,9 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
     print(f"  rejected        : {len(rejected)}")
     if pre_revenue:
         print(f"  pre-revenue     : {len(pre_revenue)} (firewall — no metric math)")
+    if recent_ipos:
+        print(f"  recent IPOs     : {len(recent_ipos)} "
+              f"(< {args.ipo_seasoning_months} mo seasoning — set aside)")
     print("  rejected by balance-sheet gate (names may fail more than one):")
     print(f"    Leverage >3x  : {sum(1 for r in rejected if not r.pass_leverage)}")
     print(f"    Goodwill >40% : {sum(1 for r in rejected if not r.pass_goodwill)}")
@@ -288,6 +300,14 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
               f"fired before any metric math:")
         for r in pre_revenue:
             print(f"  {r.ticker} ({_short(r.name)})")
+
+    # --- recent IPOs (unseasoned listings — set aside, never in the shortlist) ---
+    if recent_ipos:
+        print(f"\nRECENT_IPO ({len(recent_ipos)}) — listed within the last "
+              f"{args.ipo_seasoning_months} months; history-based gates have no "
+              f"history and IPO-year base rates are hostile. Revisit once seasoned:")
+        for r in recent_ipos:
+            print(f"  {r.ticker} ({_short(r.name)}): listed {r.company.ipo_date}")
 
     # --- insufficient history (cleared the snapshot, lacked annual history) ---
     if insufficient:

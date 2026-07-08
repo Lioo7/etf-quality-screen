@@ -93,6 +93,16 @@ rescue:
 When multiple gates fail, a balance-sheet failure is definitive and takes
 precedence over the history checks in the verdict.
 
+**IPO seasoning.** A name listed within the last 12 months
+(`--ipo-seasoning-months`, `0` disables) is set aside as `RECENT_IPO` — never
+in the shortlist, reported in its own section like `INSUFFICIENT_HISTORY`.
+Recent IPOs structurally break the methodology's inputs (no history for the
+history gates, SBC/dilution distorted by the offering, lockup expirations
+scheduling known supply shocks), and the long-run base rates for IPO-year
+buyers are hostile (Ritter). When the source exposes no first-trading date it
+is **not guessed**: the name is screened normally and flagged
+`ipo_date_unknown`.
+
 **Gross-margin level & stability (advisory).** Gross margin is where pricing
 power shows up first: a high *and stable* margin through cycles means customers
 keep paying up and competitors can't force discounting. Each snapshot qualifier
@@ -151,7 +161,8 @@ Flags: `--provider {yfinance,fmp,mock}` · `--universe <etf>` · `--holdings PAT
 · `--throttle SECONDS` · `--overrides PATH` · `--export {csv,md}` · `--out PATH`
 · `--sector-context` · `--rank {rule40,sector-relative}`
 · `--consistency-years N` (default 3; `0` bypasses the history gate)
-· `--consistency-mode {strict,trend}` (default `trend`).
+· `--consistency-mode {strict,trend}` (default `trend`)
+· `--ipo-seasoning-months N` (default 12; `0` disables the RECENT_IPO set-aside).
 
 ### Sector context (informational)
 
@@ -411,13 +422,14 @@ consult a qualified professional before any financial decision.
 ## Development
 
 ```bash
-pytest -q          # 118 tests: acceptance fixtures, edge cases, data layer,
+pytest -q          # 130 tests: acceptance fixtures, edge cases, data layer,
                    # basis consistency, SBC-assumed-0, overrides, export,
                    # sector context (incl. the verdicts-unchanged regression),
                    # the issuer-holdings-CSV loader, the multi-year consistency
                    # gate (strict + trend), the balance-sheet gates, the
                    # pre-revenue firewall, the ROIC-history annotation, the
-                   # earnings-quality gate, and the gross-margin annotation
+                   # earnings-quality gate, the gross-margin annotation, and
+                   # the RECENT_IPO seasoning classification
 flake8 etf_screen tests
 ```
 

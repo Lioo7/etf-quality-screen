@@ -40,14 +40,16 @@ _BALANCE_SHEET = {
 # Fields a user may override / supply. Scalar snapshot lines only — annual
 # `history` is intentionally not overridable here, so an override-rescued name
 # carries no history and lands in INSUFFICIENT_HISTORY when the gate runs.
+# `ipo_date` is patchable (a verified first-trading date), never required.
 _OVERRIDABLE = {
     "name", "revenue_ttm", "revenue_ttm_prior", "ocf_ttm", "capex_ttm",
     "sbc_ttm", "diluted_shares_now", "diluted_shares_prior", "market_cap",
-    "forward_pe", "forward_eps_growth", "net_income_ttm",
+    "forward_pe", "forward_eps_growth", "net_income_ttm", "ipo_date",
 } | _BALANCE_SHEET
 # Fields that must all be present to construct a Company from scratch (the
-# balance-sheet lines are excluded — they fall back to Company defaults).
-_REQUIRED = _OVERRIDABLE - {"name", "forward_pe"} - _BALANCE_SHEET
+# balance-sheet lines are excluded — they fall back to Company defaults, and
+# ipo_date stays optional: unknown is a flagged, first-class state).
+_REQUIRED = _OVERRIDABLE - {"name", "forward_pe", "ipo_date"} - _BALANCE_SHEET
 
 
 def load_overrides(path: str | Path = DEFAULT_PATH) -> dict[str, dict]:
@@ -85,8 +87,9 @@ def company_from_override(ticker: str, fields: dict) -> Company | None:
     if not _REQUIRED.issubset(fields):
         return None
     numeric = {k: fields[k] for k in _REQUIRED}
-    # Honor any supplied balance-sheet lines; the rest fall back to Company defaults.
-    extra = {k: fields[k] for k in _BALANCE_SHEET if k in fields}
+    # Honor any supplied balance-sheet lines (and a verified ipo_date); the rest
+    # fall back to Company defaults.
+    extra = {k: fields[k] for k in _BALANCE_SHEET | {"ipo_date"} if k in fields}
     company = Company(
         ticker=ticker, forward_pe=fields.get("forward_pe"),
         basis="override", **numeric, **extra,

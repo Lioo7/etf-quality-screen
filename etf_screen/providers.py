@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 from abc import ABC, abstractmethod
 from dataclasses import asdict
+from datetime import date, timedelta
 
 from .cache import DiskCache
 from .screen import AnnualPeriod, Company
@@ -33,7 +34,8 @@ _COMPANY_FIELDS = (
     "total_debt", "cash_and_equivalents", "goodwill", "total_assets",
     "operating_income", "total_equity", "goodwill_assumed_zero", "debt_assumed_zero",
     "low_confidence", "name", "basis",
-    "sbc_assumed_zero", "overridden_fields", "sector", "industry", "history",
+    "sbc_assumed_zero", "overridden_fields", "sector", "industry", "ipo_date",
+    "history",
 )
 
 
@@ -173,6 +175,19 @@ class MockProvider(DataProvider):
                                          operating_income=440, total_debt=0,
                                          cash_and_equivalents=600, total_equity=2000),
                         ]),
+        # Would clear snapshot Track A, but listed ~4 months ago (dynamic date so
+        # the demo never ages out) -> RECENT_IPO under the default 12-mo seasoning.
+        "FRESH": Company("FRESH", 1000, 700, 400, 50, 50, 1000, 1000,
+                         5000, 30.0, 20.0, 200,
+                         total_debt=0, cash_and_equivalents=300, goodwill=0,
+                         total_assets=1500, operating_income=200, total_equity=1000,
+                         name="Fresh Listing Inc.", basis="TTM",
+                         sector="Technology", industry="Software—Application",
+                         ipo_date=(date.today() - timedelta(days=120)).isoformat(),
+                         history=[
+                             AnnualPeriod("2023", 770, 310, 40, 40),
+                             AnnualPeriod("2024", 1000, 400, 50, 50),
+                         ]),
         # Clears snapshot Track A + every balance-sheet gate, but cumulative 3-yr
         # net income (1200) badly outruns cumulative adjusted FCF (800, ratio
         # 0.67 < 0.8) -- the classic "profits that never become cash" red flag.
@@ -470,6 +485,12 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info, q_bal=None, a_bal=None) 
     if sector == "Unknown":
         low_conf.append("sector not reported by source")
 
+    # First trading date for the IPO-seasoning classification. Yahoo exposes it
+    # as an epoch timestamp; absent -> None (flagged), the name screens normally.
+    ipo_date = _yf_first_trade_date(info)
+    if ipo_date is None:
+        low_conf.append("first trading date unknown - IPO seasoning not checked")
+
     return Company(
         ticker=ticker, revenue_ttm=revenue_ttm, revenue_ttm_prior=revenue_prior,
         ocf_ttm=ocf, capex_ttm=capex, sbc_ttm=sbc,
@@ -483,9 +504,21 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info, q_bal=None, a_bal=None) 
         goodwill_assumed_zero=goodwill_assumed_zero, debt_assumed_zero=debt_assumed_zero,
         low_confidence=low_conf,
         name=name, basis=basis, sbc_assumed_zero=sbc_assumed_zero,
-        sector=sector, industry=industry,
+        sector=sector, industry=industry, ipo_date=ipo_date,
         history=_annual_history(a_inc, a_cf, a_bal),
     )
+
+
+def _yf_first_trade_date(info: dict) -> str | None:
+    """ISO first-trading date from Yahoo's epoch field, or None (never guessed)."""
+    ts = info.get("firstTradeDateEpochUtc")
+    if not ts:
+        return None
+    try:
+        from datetime import datetime, timezone
+        return datetime.fromtimestamp(float(ts), tz=timezone.utc).date().isoformat()
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def _bal_amount(bal, labels):
@@ -682,17 +715,20 @@ class FMPProvider(DataProvider):
         price, ttm_eps = quote.get("price"), quote.get("eps")
         name = quote.get("name") or ticker
 
-        # Sector/industry from the company profile (informational only).
-        sector, industry = "Unknown", ""
+        # Sector/industry/IPO date from the company profile (informational only).
+        sector, industry, ipo_date = "Unknown", "", None
         try:
             profile = self._get(f"profile/{ticker}")
             if profile:
                 sector = profile[0].get("sector") or "Unknown"
                 industry = profile[0].get("industry") or ""
+                ipo_date = profile[0].get("ipoDate") or None
         except DataUnavailable:
             pass  # profile is optional context; never block a name on it
         if sector == "Unknown":
             low_conf.append("sector not reported by source")
+        if ipo_date is None:
+            low_conf.append("first trading date unknown - IPO seasoning not checked")
 
         forward_pe, forward_eps_growth = None, 0.0
         est = self._get(f"analyst-estimates/{ticker}", period="annual")
@@ -748,7 +784,7 @@ class FMPProvider(DataProvider):
             goodwill_assumed_zero=goodwill_assumed_zero, debt_assumed_zero=debt_assumed_zero,
             low_confidence=low_conf,
             name=name, basis="TTM", sbc_assumed_zero=not sbc_found,
-            sector=sector, industry=industry,
+            sector=sector, industry=industry, ipo_date=ipo_date,
             history=_fmp_annual_history(inc_a, cf_a, bal_a),
         )
 
