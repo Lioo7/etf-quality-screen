@@ -18,7 +18,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from math import isnan, nan
-from statistics import mean, median
+from statistics import mean, median, pstdev
 
 # --- thresholds (the validated spec) ---------------------------------------
 RULE40_MIN = 40.0       # revenue growth% + adjusted FCF margin%
@@ -43,6 +43,11 @@ ROIC_HISTORY_MIN_YEARS = 3  # below this, the median is flagged as noisy/thin
 # --- earnings quality (rejecting; balance-sheet-gate family) ----------------
 EARNINGS_QUALITY_WINDOW = 3    # cumulative window, years
 EARNINGS_QUALITY_MIN = 0.8     # cumulative adjusted FCF / cumulative net income floor
+
+# --- gross-margin level & stability (advisory; pricing-power proxy) --------
+PRICING_POWER_GM_MIN = 40.0       # gross margin % floor
+PRICING_POWER_STDDEV_MAX = 5.0    # gross margin stddev ceiling, percentage points
+PRICING_POWER_MIN_YEARS = 5       # minimum usable years to claim pricing power
 
 # --- sector context (INFORMATIONAL ONLY — never gates a verdict) -----------
 SECTOR_MIN_PEERS = 5    # don't compute a sector median below this many peers
@@ -236,6 +241,10 @@ class Result:
     # snapshot qualifier, mirroring ``consistency``). Never gates the verdict.
     roic_history: "RoicHistory | None" = None
 
+    # Multi-year gross-margin level & stability (advisory — same lifecycle as
+    # ``roic_history``). Never gates the verdict, never appears in ranking.
+    margin_profile: "MarginProfile | None" = None
+
     @property
     def passed(self) -> bool:
         return self.status is ScreenStatus.PASS
@@ -391,6 +400,7 @@ def evaluate(c: Company, consistency_years: int = 0,
 
     consistency: ConsistencyResult | None = None
     roic_hist: RoicHistory | None = None
+    margin_prof: MarginProfile | None = None
 
     if not evaluable:
         status = ScreenStatus.NOT_EVALUABLE
@@ -407,6 +417,7 @@ def evaluate(c: Company, consistency_years: int = 0,
         # A snapshot track cleared — layer the balance-sheet and consistency gates.
         track = "Track A" if track_a else "Track B"
         roic_hist = roic_history(c.history)
+        margin_prof = margin_profile(c.history)
         bs_reasons = _balance_sheet_reasons(
             pass_leverage, pass_goodwill, roic_applied, pass_roic,
             net_debt, fcf, net_debt_to_fcf, goodwill_to_assets, roic,
@@ -458,7 +469,7 @@ def evaluate(c: Company, consistency_years: int = 0,
         earnings_quality_ratio=eq_ratio, earnings_quality_years=eq_years,
         status=status, track_a=track_a, track_b=track_b,
         track=track, reasons=reasons, consistency=consistency,
-        roic_history=roic_hist,
+        roic_history=roic_hist, margin_profile=margin_prof,
     )
 
 
@@ -604,6 +615,53 @@ def roic_history(history: list[AnnualPeriod]) -> RoicHistory:
     durable = med >= ROIC_DURABLE_MIN and years_used >= ROIC_DURABLE_YEARS
     note = "insufficient ROIC history" if years_used < ROIC_HISTORY_MIN_YEARS else ""
     return RoicHistory(med, years_used, durable, note=note)
+
+
+# ---------------------------------------------------------------------------
+# Gross-margin level & stability (advisory, multi-year) — pure, no IO
+# ---------------------------------------------------------------------------
+@dataclass
+class MarginProfile:
+    """Multi-year gross-margin level + stability — advisory only, never a gate.
+
+    Gross margin is where pricing power shows up first: a high AND stable
+    margin through cycles means customers keep paying up and competitors can't
+    force discounting. Hard-gating on it would double-punish capital-intensive
+    sectors the screen is already structurally biased against, so this stays
+    purely informational.
+    """
+
+    gm_latest: float | None    # most recent usable year's gross margin, %
+    gm_stddev: float | None    # population stddev of gross margin, percentage points
+    years_used: int
+    pricing_power: bool        # gm_latest >= 40, stddev < 5pp, over >= 5 usable years
+    not_applicable: bool       # zero usable years (e.g. banks/insurers -> no COGS line)
+
+
+def margin_profile(history: list[AnnualPeriod]) -> MarginProfile:
+    """Gross-margin level (latest) and stability (stddev) over available years.
+
+    Up to the last 10 annual periods are considered; a year is skipped (never
+    fabricated) when ``cogs`` is absent — the expected case for banks/insurers,
+    which don't report a cost-of-revenue line. Zero usable years is flagged
+    ``not_applicable`` rather than reporting a misleading N/A-as-zero margin.
+    """
+    usable = [(p.fiscal_label, pct(p.revenue - p.cogs, p.revenue))
+              for p in history[-10:] if p.cogs is not None]
+
+    if not usable:
+        return MarginProfile(None, None, 0, False, not_applicable=True)
+
+    values = [v for _, v in usable]
+    gm_latest = values[-1]
+    years_used = len(values)
+    gm_stddev = pstdev(values)
+    pricing_power = (
+        gm_latest >= PRICING_POWER_GM_MIN
+        and gm_stddev < PRICING_POWER_STDDEV_MAX
+        and years_used >= PRICING_POWER_MIN_YEARS
+    )
+    return MarginProfile(gm_latest, gm_stddev, years_used, pricing_power, not_applicable=False)
 
 
 # ---------------------------------------------------------------------------

@@ -24,6 +24,7 @@ COLUMNS = [
     "sbc_pct", "peg", "net_debt_to_fcf", "goodwill_to_assets", "roic",
     "roic_median", "roic_years", "roic_durable",
     "earnings_quality_ratio", "earnings_quality_years", "earnings_quality_applicable",
+    "gm_latest", "gm_stddev", "gm_years", "pricing_power", "gm_not_applicable",
     "net_income_ttm", "rule40_hist", "consistency",
     "sector_med_rule40", "sector_med_ps", "sector_med_peg",
     "basis", "sbc_assumed_zero", "manual_override", "reason", "low_confidence",
@@ -89,6 +90,14 @@ def _roic_durable(r: Result):
     return r.roic_history.durable if r.roic_history else False
 
 
+def _gm_field(r: Result, attr: str, nd: int = 1):
+    mp = r.margin_profile
+    if mp is None or mp.not_applicable:
+        return "N/A"
+    val = getattr(mp, attr)
+    return "N/A" if val is None else _num(val, nd)
+
+
 def _result_row(r: Result) -> dict:
     return {
         "ticker": r.ticker, "name": r.name, "sector": r.sector, "track": r.track,
@@ -103,6 +112,10 @@ def _result_row(r: Result) -> dict:
         "earnings_quality_ratio": _num(r.earnings_quality_ratio, 2),
         "earnings_quality_years": r.earnings_quality_years,
         "earnings_quality_applicable": r.earnings_quality_applicable,
+        "gm_latest": _gm_field(r, "gm_latest"), "gm_stddev": _gm_field(r, "gm_stddev"),
+        "gm_years": _gm_field(r, "years_used", 0),
+        "pricing_power": bool(r.margin_profile and r.margin_profile.pricing_power),
+        "gm_not_applicable": bool(r.margin_profile and r.margin_profile.not_applicable),
         "net_income_ttm": _num(r.company.net_income_ttm),
         "rule40_hist": rule40_hist(r), "consistency": consistency_status(r),
         "sector_med_rule40": _sector_med(r, "rule40"),

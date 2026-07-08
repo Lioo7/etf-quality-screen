@@ -12,3 +12,7 @@
   ≥ 0.8 for names with cumulative net income > 0. Catches profits that never
   become cash (aggressive revenue recognition, ballooning receivables). N/A,
   never a fail, when cumulative net income isn't positive.
+- **Gross-margin level & stability (advisory).** Latest gross margin + stddev
+  over up to 10 annual years; GM ≥ 40% with stddev < 5pp over ≥ 5 years earns a
+  `pricing_power` tag. Names without a cost-of-revenue line (banks, insurers)
+  are `gm_not_applicable`. Informational columns only — never a gate.

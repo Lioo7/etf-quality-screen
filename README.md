@@ -93,6 +93,16 @@ rescue:
 When multiple gates fail, a balance-sheet failure is definitive and takes
 precedence over the history checks in the verdict.
 
+**Gross-margin level & stability (advisory).** Gross margin is where pricing
+power shows up first: a high *and stable* margin through cycles means customers
+keep paying up and competitors can't force discounting. Each snapshot qualifier
+reports its latest gross margin and the stddev across up to 10 annual years
+(`GM% (σ,y)`); GM ≥ 40% with stddev < 5pp over ≥ 5 years earns the
+`pricing_power` tag. Names that don't report cost of revenue (banks, insurers)
+are marked `gm_not_applicable` — never guessed. Advisory only, **not** a gate:
+hard-gating on GM would double-punish semis/industrials that can be excellent
+businesses at structurally lower margins.
+
 **ROIC history (advisory).** A single year's ROIC is noisy — one restructuring
 charge or a cyclical margin peak can swing it violently. Alongside the snapshot
 gate above (unchanged), each snapshot qualifier also gets the **median** ROIC
@@ -401,13 +411,13 @@ consult a qualified professional before any financial decision.
 ## Development
 
 ```bash
-pytest -q          # 108 tests: acceptance fixtures, edge cases, data layer,
+pytest -q          # 118 tests: acceptance fixtures, edge cases, data layer,
                    # basis consistency, SBC-assumed-0, overrides, export,
                    # sector context (incl. the verdicts-unchanged regression),
                    # the issuer-holdings-CSV loader, the multi-year consistency
                    # gate (strict + trend), the balance-sheet gates, the
-                   # pre-revenue firewall, the ROIC-history annotation, and the
-                   # earnings-quality gate
+                   # pre-revenue firewall, the ROIC-history annotation, the
+                   # earnings-quality gate, and the gross-margin annotation
 flake8 etf_screen tests
 ```
 

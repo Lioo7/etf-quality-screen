@@ -231,12 +231,12 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
             _f(r.growth), _f(r.adj_margin), _f(r.rule40), _f(r.p_s, 1),
             _f(r.dilution), _f(r.sbc_pct), _peg(r.peg),
             _f(r.net_debt_to_fcf, 1), _pct(r.goodwill_to_assets, 0), _pct(r.roic),
-            _roic_hist(r), _eq_ratio(r), export_mod.rule40_hist(r),
+            _roic_hist(r), _eq_ratio(r), _gm(r), export_mod.rule40_hist(r),
         ] for i, r in enumerate(survivors)]
         headers = ["#", "Ticker", "Company", "Sector", "Track", "Growth%",
                    "AdjFCF%", "Rule40", "P/S", "Dil%", "SBC%", "PEG",
                    "NetDebt/FCF", "GW/Assets%", "ROIC%", "ROIC Med(y)", "EQ(y)",
-                   "Rule40 Hist"]
+                   "GM% (σ,y)", "Rule40 Hist"]
         print(tabulate(rows, headers=headers, floatfmt=".1f"))
     else:
         print("  (empty — a strict screen producing no survivors is a valid result)")
@@ -388,6 +388,14 @@ def _eq_ratio(r: Result) -> str:
     return f"{r.earnings_quality_ratio:.2f} ({r.earnings_quality_years}y)"
 
 
+def _gm(r: Result) -> str:
+    """Render the gross-margin annotation, e.g. '75.0 (σ0.1, 6y)'; N/A when not applicable."""
+    mp = r.margin_profile
+    if mp is None or mp.not_applicable or mp.gm_latest is None:
+        return "N/A"
+    return f"{mp.gm_latest:.1f} (σ{mp.gm_stddev:.1f}, {mp.years_used}y)"
+
+
 def _short(s: str, n: int = 24) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
@@ -403,6 +411,10 @@ def _flags(r: Result) -> str:
         tags.append("low-confidence: " + ", ".join(r.company.low_confidence))
     if r.roic_history and r.roic_history.durable:
         tags.append("roic_durable")
+    if r.margin_profile and r.margin_profile.pricing_power:
+        tags.append("pricing_power")
+    if r.margin_profile and r.margin_profile.not_applicable:
+        tags.append("gm_not_applicable")
     return f"  [{' | '.join(tags)}]" if tags else ""
 
 

@@ -145,6 +145,8 @@ class MockProvider(DataProvider):
                            ]),
         # Wide-moat example for the ROIC-history annotation: ROIC >= 15% every
         # year across 6 years -> roic_durable=True (median comfortably >= 15%).
+        # Also carries stable ~75% gross margins across all 6 years -> the
+        # pricing_power annotation (gm_latest >= 40%, stddev < 5pp, >= 5 years).
         "MOAT": Company("MOAT", 2000, 1500, 900, 100, 80, 1000, 1000,
                         12000, 28.0, 18.0, 400,
                         total_debt=0, cash_and_equivalents=600, goodwill=50,
@@ -152,22 +154,22 @@ class MockProvider(DataProvider):
                         name="Wide Moat Compounder Inc.", basis="TTM",
                         sector="Technology", industry="Software—Application",
                         history=[
-                            AnnualPeriod("2019", 800, 320, 40, 30,
+                            AnnualPeriod("2019", 800, 320, 40, 30, cogs=200,
                                          operating_income=170, total_debt=0,
                                          cash_and_equivalents=200, total_equity=850),
-                            AnnualPeriod("2020", 1000, 400, 50, 40,
+                            AnnualPeriod("2020", 1000, 400, 50, 40, cogs=250,
                                          operating_income=220, total_debt=0,
                                          cash_and_equivalents=280, total_equity=1050),
-                            AnnualPeriod("2021", 1250, 500, 60, 50,
+                            AnnualPeriod("2021", 1250, 500, 60, 50, cogs=310,
                                          operating_income=270, total_debt=0,
                                          cash_and_equivalents=350, total_equity=1300),
-                            AnnualPeriod("2022", 1500, 600, 70, 60,
+                            AnnualPeriod("2022", 1500, 600, 70, 60, cogs=375,
                                          operating_income=320, total_debt=0,
                                          cash_and_equivalents=430, total_equity=1550),
-                            AnnualPeriod("2023", 1750, 700, 80, 70,
+                            AnnualPeriod("2023", 1750, 700, 80, 70, cogs=435,
                                          operating_income=380, total_debt=0,
                                          cash_and_equivalents=510, total_equity=1780),
-                            AnnualPeriod("2024", 2000, 900, 100, 80,
+                            AnnualPeriod("2024", 2000, 900, 100, 80, cogs=500,
                                          operating_income=440, total_debt=0,
                                          cash_and_equivalents=600, total_equity=2000),
                         ]),
