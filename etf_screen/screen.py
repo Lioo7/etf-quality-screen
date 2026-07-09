@@ -564,6 +564,9 @@ def evaluate(c: Company, consistency_years: int = 0,
             f"recent IPO (listed {c.ipo_date}, "
             f"< {ipo_seasoning_months} mo seasoning)"
         ]
+        # Unlock prices are WATCHLIST buy triggers — an unseasoned listing has
+        # no actionable trigger, so a would-be-WATCHLIST name sheds them here.
+        unlock_ps_price = unlock_peg_price = None
 
     return Result(
         company=c,

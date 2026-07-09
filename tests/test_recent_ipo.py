@@ -82,6 +82,19 @@ def test_unknown_ipo_date_screens_normally_and_is_flagged():
     assert r.ipo_date_unknown
 
 
+def test_recent_ipo_sheds_watchlist_unlock_prices():
+    # A would-be-WATCHLIST name that is also inside the seasoning window is
+    # RECENT_IPO with NO unlock prices — buy triggers are WATCHLIST-only and
+    # an unseasoned listing has no actionable trigger.
+    from test_watchlist import _wonderful_but_pricey
+    c = _wonderful_but_pricey()
+    assert evaluate(c, today=TODAY).watchlist  # sanity: watchlist without the IPO
+    c.ipo_date = "2026-03-01"
+    r = evaluate(c, today=TODAY)
+    assert r.status is ScreenStatus.RECENT_IPO
+    assert r.unlock_ps_price is None and r.unlock_peg_price is None
+
+
 def test_pre_revenue_firewall_still_wins():
     # The firewall runs FIRST: a pre-revenue recent listing stays PRE_REVENUE.
     c = make("PRE", 0, 0, 0, 0, 0, 100, 100, 5000, None, 0, net_income=-50)
