@@ -1,0 +1,25 @@
+# Japan automation & robotics — US-traded ADRs
+#
+# Thesis: Japan owns a structural share of the global factory-automation,
+# robotics, and machine-tool stack — a long secular theme (reshoring, labor
+# scarcity) that a US-index screen never touches. Screening the Tokyo exchange
+# directly is data-hostile via free providers, so this list uses the US-traded
+# ADRs instead.
+#
+# CAVEAT — data quality is the trade-off here, by design: most of these are
+# UNSPONSORED OTC ADRs with thin yfinance fundamentals. Expect a high
+# "could not source" rate, annual-basis fallbacks, and low-confidence flags —
+# that is the tool being honest, not broken. Names that do screen cleanly are
+# the deliberate yield of the thesis.
+#
+# Format: one ticker per line; '#' starts a comment (full-line or trailing).
+
+FANUY   # FANUC — CNC systems and industrial robots
+YASKY   # Yaskawa Electric — servo motors, robotics
+OMRNY   # Omron — sensors, control systems
+KYCCF   # Keyence — machine vision / sensors (OTC F-share)
+SMCAY   # SMC Corp — pneumatic components
+HTHIY   # Hitachi — conglomerate with a large automation arm
+MIELY   # Mitsubishi Electric — factory automation systems
+DAIUF   # Daifuku — material-handling / warehouse automation
+HRLBF   # Harmonic Drive — strain-wave robot gears

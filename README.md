@@ -69,6 +69,14 @@ rescue:
 - **ROIC** — pre-tax operating income ÷ invested capital ≥ 10%. Applied **only to
   a Track-A name under `strict` consistency mode**; advisory (never a failure)
   when it can't be computed.
+- **Earnings quality** — cumulative 3-year adjusted FCF ÷ cumulative 3-year net
+  income ≥ 0.8, for names with cumulative net income > 0 (either track).
+  Profits that never become cash are the classic accounting red flag —
+  aggressive revenue recognition, ballooning receivables, capitalized costs.
+  A single year is noisy from working-capital swings, so this cumulates over 3
+  years (fewer if that's all the history has, and the shorter basis is
+  reported); **N/A, never a fail**, when cumulative net income isn't positive
+  — Track B's own quality gate already covers unprofitable names.
 
 **Multi-year consistency gate.** Optional durability check over annual history
 (`--consistency-years N`, default 3) layered on a snapshot qualifier:
@@ -84,6 +92,64 @@ rescue:
 
 When multiple gates fail, a balance-sheet failure is definitive and takes
 precedence over the history checks in the verdict.
+
+**Watchlist — quality passes, valuation fails.** The most common screening
+outcome for a genuinely great company is "wonderful business, wrong price".
+A name that clears **every quality gate** (its would-be track, the
+balance-sheet gates, earnings quality, and the consistency gate) but fails
+**only** the valuation filters (P/S guardrail and/or a computable-but-failed
+PEG) is classified `WATCHLIST` instead of being discarded — reported in its own
+section and export rows with the **unlock price**: the price at which P/S would
+equal `0.5 × growth%` (and, where PEG was the blocker, the price at which PEG
+= 2.0), computed on the same share count and revenue base as the P/S itself.
+The buy trigger is computed on a calm day so a future dip doesn't have to be
+re-judged under FOMO. Boundaries: a name failing quality **and** valuation
+stays plain rejected; a profitable name whose PEG is N/A stays rejected (no
+price fixes missing estimates, and Track B stays barred); zero/negative growth
+→ unlock `N/A` (a cheap price can't fix a shrinking company — it must
+re-qualify on quality first). `WATCHLIST` names are never in the shortlist.
+
+**IPO seasoning.** A name listed within the last 12 months
+(`--ipo-seasoning-months`, `0` disables) is set aside as `RECENT_IPO` — never
+in the shortlist, reported in its own section like `INSUFFICIENT_HISTORY`.
+Recent IPOs structurally break the methodology's inputs (no history for the
+history gates, SBC/dilution distorted by the offering, lockup expirations
+scheduling known supply shocks), and the long-run base rates for IPO-year
+buyers are hostile (Ritter). When the source exposes no first-trading date it
+is **not guessed**: the name is screened normally and flagged
+`ipo_date_unknown`.
+
+**Gross-margin level & stability (advisory).** Gross margin is where pricing
+power shows up first: a high *and stable* margin through cycles means customers
+keep paying up and competitors can't force discounting. Each snapshot qualifier
+reports its latest gross margin and the stddev across up to 10 annual years
+(`GM% (σ,y)`); GM ≥ 40% with stddev < 5pp over ≥ 5 years earns the
+`pricing_power` tag. Names that don't report cost of revenue (banks, insurers)
+are marked `gm_not_applicable` — never guessed. Advisory only, **not** a gate:
+hard-gating on GM would double-punish semis/industrials that can be excellent
+businesses at structurally lower margins.
+
+**ROIC history (advisory).** A single year's ROIC is noisy — one restructuring
+charge or a cyclical margin peak can swing it violently. Alongside the snapshot
+gate above (unchanged), each snapshot qualifier also gets the **median** ROIC
+over up to the last 10 annual periods, plus the year count actually used
+(e.g. `ROIC Med(y)` shows `18.2 (7y)`). A year missing operating income, or with
+non-positive invested capital, is skipped rather than fabricated. Median ≥ 15%
+over ≥ 5 usable years earns the `roic_durable` tag — evidence of a moat wide
+enough to survive one bad year, not a rounding error. This is purely
+informational: it never changes `passed`, `track`, or ranking.
+
+**Entry timing (informational).** The screen answers "what is worth owning" —
+deliberately not "when to buy". But the downstream workflow applies an
+anti-FOMO entry rule, so each name carries two timing columns from
+**split/dividend-adjusted** price history (yfinance `history(period="max",
+auto_adjust=True)` closes — raw closes would make any splitter's ATH
+meaningless): distance from the all-time high (`ATH%`) and the trailing
+3-month total return (`3M%`). A 3-month return above **+50%** while within
+**20% of the ATH** earns the `HOT` tag — a *patience* case, never a rejection.
+Listings younger than 3 months show `N/A` (no return exists, none is invented),
+and the export records how many years of history the ATH actually covers.
+**Strictly informational — never affects pass/fail, tracks, or ranking.**
 
 Survivors are ranked by Rule of 40 (desc), tie-broken by PEG (asc), then P/S
 headroom.
@@ -119,11 +185,12 @@ python -m etf_screen.cli --universe qqq --consistency-years 0
 ```
 
 Flags: `--provider {yfinance,fmp,mock}` · `--universe <etf>` · `--holdings PATH`
-· `--tickers a,b,c` · `--limit N` · `--refresh` (ignore cache) · `--no-cache`
+· `--tickers a,b,c` · `--tickers-file PATH` · `--limit N` · `--refresh` (ignore cache) · `--no-cache`
 · `--throttle SECONDS` · `--overrides PATH` · `--export {csv,md}` · `--out PATH`
 · `--sector-context` · `--rank {rule40,sector-relative}`
 · `--consistency-years N` (default 3; `0` bypasses the history gate)
-· `--consistency-mode {strict,trend}` (default `trend`).
+· `--consistency-mode {strict,trend}` (default `trend`)
+· `--ipo-seasoning-months N` (default 12; `0` disables the RECENT_IPO set-aside).
 
 ### Sector context (informational)
 
@@ -203,14 +270,15 @@ Phase-1 elimination counts
     Leverage >3x  : 0
     Goodwill >40% : 0
     ROIC <10%     : 0
+    Earnings qlty : 0
   consistency gate: 0 demoted, 0 insufficient history (3-yr window)
   ...
 
 Shortlist (1 names) — ranked by Rule of 40
 
-  #  Ticker  Company        Sector      Track    Growth%  AdjFCF%  Rule40   P/S  ...  NetDebt/FCF  GW/Assets%  ROIC%  Rule40 Hist
----  ------  -------------  ----------  -------  -------  -------  ------  ----  ---  -----------  ----------  -----  --------------
-  1  CRWD    CrowdStrike…   Technology  Track B     45.8     13.7    59.5  22.9  ...          0.0           2  -25.0  [63.8 -> 59.5]
+  #  Ticker  Company        Sector      Track    Growth%  AdjFCF%  Rule40   P/S  ...  NetDebt/FCF  GW/Assets%  ROIC%  ROIC Med(y)  EQ(y)  Rule40 Hist
+---  ------  -------------  ----------  -------  -------  -------  ------  ----  ---  -----------  ----------  -----  -----------  -----  --------------
+  1  CRWD    CrowdStrike…   Technology  Track B     45.8     13.7    59.5  22.9  ...          0.0           2  -25.0  N/A          N/A    [63.8 -> 59.5]
 
 Why survivors passed:
   CRWD (CrowdStrike Holdings,…): Track B (Rule40 59.5, P/S 22.9 vs guardrail 22.9, SBC 14.3%)
@@ -218,6 +286,71 @@ Why survivors passed:
 
 (The real table also carries the `Dil%`, `SBC%`, and `PEG` columns between `P/S`
 and the balance-sheet block — elided as `...` here for width.)
+
+## Reading a result
+
+The screen now has enough states that output literacy *is* the user interface.
+This run of the full mock universe produces every one of them:
+
+```bash
+python -m etf_screen.cli --provider mock \
+    --tickers MSFT,GOOGL,CRWD,DURABLE,MOAT,LEAKY,FRESH,DECEL,NEWLY,BURN,ROLLUP,LEVERED
+```
+
+**A clean pass, fully annotated — MOAT.** Walk it through every layer:
+
+1. *Pre-revenue firewall*: revenue is positive → proceed.
+2. *IPO seasoning*: no recent listing date → proceed.
+3. *Routing*: GAAP-profitable → Track A only.
+4. *Four filters*: Rule 40 = 69.3 (growth 33.3% + adj FCF margin 36.0%) ✓ ·
+   P/S 6.0 vs guardrail 16.7 ✓ · SBC 4.0% ✓ · PEG 1.56 ✓ → snapshot Track A.
+5. *Balance-sheet gates*: net cash (`NetDebt/FCF 0.0`) ✓ · goodwill 2% of
+   assets ✓ · ROIC 31.4% (advisory here — trend mode) ✓.
+6. *Earnings quality*: `EQ(y) N/A` — its mock history carries no net-income
+   line, so the gate honestly reports "not applicable" instead of guessing.
+7. *Consistency (3-yr trend)*: `Rule40 Hist [51.3 -> 48.1 -> 50.3]` — latest ≥
+   40, mean ≥ 30, no collapse → PASS.
+8. *Advisory annotations*: `ROIC Med(y) 28.6 (6y)` → **roic_durable** (median ≥
+   15% over ≥ 5y); `GM% 75.0 (σ0.1, 6y)` → **pricing_power** (≥ 40%, stable,
+   ≥ 5y). Tags appear on its "why it passed" line.
+9. *Entry timing*: `ATH% / 3M%` are `N/A` (no mock price data for this name) —
+   reported as unknown, never invented.
+
+**The watchlist case — MSFT.** Quality is never the problem: profitable, Rule
+40 = 48.2, clean balance sheet, trend consistency passes. But `P/S 12.7 >
+guardrail 7.8` and `PEG 2.3 > 2.0` — valuation is the *only* blocker, so
+instead of vanishing into the rejected pile it lands here:
+
+```
+WATCHLIST (1) — wonderful business, wrong price; ...
+  MSFT (Microsoft Corporation): P/S = 12.7 (> guardrail 7.8); PEG = 2.3 (> 2.0);
+  profitable, Track B barred -> unlock: P/S $256.64, PEG $365.07
+```
+
+Read the unlock prices as pre-computed buy triggers: below ~$257 the P/S
+guardrail clears; below ~$365 PEG clears. Both must clear for a pass, so the
+*binding* trigger is the lower one. They were computed on a calm day — when the
+price gets there, the decision is already made.
+
+**The seasoning case — FRESH.** Would pass Track A on its numbers, but it
+listed ~4 months ago, so it is set aside — not rejected, not passed:
+
+```
+RECENT_IPO (1) — listed within the last 12 months; ...
+  FRESH (Fresh Listing Inc.): listed 2026-03-10
+```
+
+**Every other terminal state in the same run:**
+
+| Name | Verdict | Why |
+| --- | --- | --- |
+| DURABLE, DECEL | PASS (Track A) | DECEL's dip year (33.6) is forgiven by `trend`; it fails under `--consistency-mode strict` |
+| CRWD | PASS (Track B) | PEG genuinely N/A; also tagged **HOT** (+58% in 3 mo, 5% off ATH) — a patience flag, not a rejection |
+| GOOGL | REJECTED | Rule of 40 = 33.0 — a quality fail, so no watchlist candidacy |
+| LEAKY | REJECTED | earnings quality: 3-yr AdjFCF/NI = 0.67 < 0.8 — profits not becoming cash |
+| ROLLUP / LEVERED | REJECTED | goodwill 60% of assets / Net Debt 3.7× FCF — balance-sheet gates |
+| BURN | REJECTED | a negative adjusted-FCF year in the Track-B consistency window |
+| NEWLY | INSUFFICIENT_HISTORY | cleared the snapshot, but 2 of 4 required annual years |
 
 ## Example runs
 
@@ -312,7 +445,34 @@ rows above the header) and discards anything that isn't a ticker — blank rows,
 footer disclaimers, cash and derivative lines. Provenance (`as-of` date, fund
 name) is read from the file's own columns when present, so the run is properly
 dated. No network, no API key, no per-issuer configuration. Precedence is
-`--tickers` > `--holdings` > `--universe`.
+`--tickers` > `--tickers-file` > `--holdings` > `--universe`.
+
+### Curated ticker-list files (`--tickers-file`)
+
+Universes should follow *theses*, not flags on a map. Scanning whole foreign
+exchanges multiplies data-quality problems (thin yfinance fundamentals for
+non-US listings) for negligible shortlist yield, so coverage is extended
+through deliberate, hand-curated lists instead — plain text, one ticker per
+line, `#` comments allowed:
+
+```bash
+python -m etf_screen.cli --tickers-file universes/israel-tech-adr.txt
+```
+
+Two starter lists are committed under [`universes/`](universes/), each with a
+header comment stating its thesis:
+
+- **[`israel-tech-adr.txt`](universes/israel-tech-adr.txt)** — US-listed
+  Israeli tech (cybersecurity, SaaS, semis). All primary/dual US listings, so
+  the data is US-filing quality.
+- **[`japan-automation-adr.txt`](universes/japan-automation-adr.txt)** —
+  Japanese factory-automation/robotics ADRs. Mostly unsponsored OTC listings:
+  expect a high "could not source" rate and assumed-0 flags — that trade-off
+  is documented in the file itself and is the tool being honest, not broken.
+
+Duplicates are dropped with a note; an empty file is a loud error, never a
+silent empty run; a junk line raises with its line number (a typo in a
+hand-curated file should fail, not screen the wrong universe).
 
 > Holdings files are point-in-time snapshots and (for active funds) change often
 > — the export header records exactly which file and as-of date produced a run.
@@ -382,12 +542,16 @@ consult a qualified professional before any financial decision.
 ## Development
 
 ```bash
-pytest -q          # 85 tests: acceptance fixtures, edge cases, data layer,
+pytest -q          # 160 tests: acceptance fixtures, edge cases, data layer,
                    # basis consistency, SBC-assumed-0, overrides, export,
                    # sector context (incl. the verdicts-unchanged regression),
                    # the issuer-holdings-CSV loader, the multi-year consistency
-                   # gate (strict + trend), the balance-sheet gates, and the
-                   # pre-revenue firewall
+                   # gate (strict + trend), the balance-sheet gates, the
+                   # pre-revenue firewall, the ROIC-history annotation, the
+                   # earnings-quality gate, the gross-margin annotation, the
+                   # RECENT_IPO seasoning classification, the entry-timing
+                   # annotations, WATCHLIST mode (incl. unlock-price math), and
+                   # the curated ticker-list loader
 flake8 etf_screen tests
 ```
 

@@ -18,7 +18,9 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from math import isnan, nan
-from statistics import mean, median
+from calendar import monthrange
+from datetime import date
+from statistics import mean, median, pstdev
 
 # --- thresholds (the validated spec) ---------------------------------------
 RULE40_MIN = 40.0       # revenue growth% + adjusted FCF margin%
@@ -34,6 +36,27 @@ TREND_AVG_MIN = 30.0    # mean windowed Rule of 40 must clear this (chronic-weak
 NET_DEBT_TO_FCF_MAX = 3.0      # net debt must be serviceable within 3 years of FCF
 GOODWILL_TO_ASSETS_MAX = 0.40  # goodwill-bloated balance sheet ceiling
 ROIC_MIN = 0.10               # pre-tax return on invested capital floor (Track A strict)
+
+# --- ROIC history (advisory; multi-year durable-moat proxy) -----------------
+ROIC_DURABLE_MIN = 0.15   # median ROIC bar for the durability annotation
+ROIC_DURABLE_YEARS = 5    # minimum years of usable data to claim durability
+ROIC_HISTORY_MIN_YEARS = 3  # below this, the median is flagged as noisy/thin
+
+# --- earnings quality (rejecting; balance-sheet-gate family) ----------------
+EARNINGS_QUALITY_WINDOW = 3    # cumulative window, years
+EARNINGS_QUALITY_MIN = 0.8     # cumulative adjusted FCF / cumulative net income floor
+
+# --- gross-margin level & stability (advisory; pricing-power proxy) --------
+PRICING_POWER_GM_MIN = 40.0       # gross margin % floor
+PRICING_POWER_STDDEV_MAX = 5.0    # gross margin stddev ceiling, percentage points
+PRICING_POWER_MIN_YEARS = 5       # minimum usable years to claim pricing power
+
+# --- IPO seasoning (classification; keeps unseasoned listings off the shortlist) ---
+IPO_SEASONING_MONTHS = 12   # default; CLI-configurable via --ipo-seasoning-months
+
+# --- entry timing (INFORMATIONAL ONLY — never touches verdicts or ranking) --
+HOT_3MO_RETURN_MIN = 50.0    # 3-month total return above this is parabolic
+HOT_ATH_PROXIMITY_PCT = 20.0  # ... and within this % of the all-time high -> HOT
 
 # --- sector context (INFORMATIONAL ONLY — never gates a verdict) -----------
 SECTOR_MIN_PEERS = 5    # don't compute a sector median below this many peers
@@ -63,6 +86,8 @@ class ScreenStatus(Enum):
     PRE_REVENUE = auto()           # revenue_ttm <= 0 — metric math never ran
     INSUFFICIENT_HISTORY = auto()  # snapshot qualifier demoted for too little annual history
     NOT_EVALUABLE = auto()         # a divide-by-zero guard tripped (missing/zero denominator)
+    RECENT_IPO = auto()            # listed within the seasoning window — never in the shortlist
+    WATCHLIST = auto()             # every quality gate passed; ONLY valuation blocked the pass
 
 
 @dataclass
@@ -71,6 +96,13 @@ class AnnualPeriod:
 
     Raw lines only — never pre-computed ratios — so the per-year math runs through
     the same :func:`_period_metrics` helper as the live snapshot, with zero drift.
+
+    ``revenue``/``ocf``/``capex``/``sbc`` gate the multi-year consistency window and
+    must form a contiguous run (see ``providers._annual_history``). The fields below
+    are OPTIONAL (default ``None``) and feed only the advisory ROIC-history /
+    gross-margin annotations and the earnings-quality gate — a year missing one of
+    these is simply skipped for that metric, never fabricated, and never truncates
+    the consistency-gate history.
     """
 
     fiscal_label: str           # human-readable year label, e.g. "2023"
@@ -78,6 +110,12 @@ class AnnualPeriod:
     ocf: float                  # operating cash flow
     capex: float                # capital expenditure (positive magnitude)
     sbc: float                  # stock-based compensation
+    operating_income: float | None = None      # EBIT that year (ROIC numerator)
+    total_debt: float | None = None            # ROIC denominator (invested capital)
+    cash_and_equivalents: float | None = None  # ROIC denominator (invested capital)
+    total_equity: float | None = None          # ROIC denominator (invested capital)
+    net_income: float | None = None            # earnings-quality gate
+    cogs: float | None = None                  # gross-margin gate; None = GM N/A that yr
 
 
 @dataclass
@@ -121,6 +159,17 @@ class Company:
     overridden_fields: list[str] = field(default_factory=list)  # from overrides.json
     sector: str = "Unknown"     # GICS-style sector bucket from the data layer
     industry: str = ""          # finer sub-sector (optional)
+    # First trading date, ISO "YYYY-MM-DD". None = unknown (never guessed): the
+    # name is screened normally and flagged ipo_date_unknown, NOT classified.
+    ipo_date: str | None = None
+    # Split/dividend-adjusted price snapshot for the ENTRY-TIMING annotations
+    # (informational only — never read by any gate). None = price history was
+    # unavailable (or, for price_3mo_ago, the listing is younger than 3 months);
+    # the annotations render N/A rather than fabricating a level.
+    current_price: float | None = None   # last adjusted close
+    ath_price: float | None = None       # all-time-high adjusted close
+    price_3mo_ago: float | None = None   # adjusted close ~3 months back
+    price_history_years: float | None = None  # span the ATH window actually covers
     # Annual statement history (OLDEST -> NEWEST) for the multi-year consistency
     # gate. Empty when the data layer could not source a contiguous run.
     history: list[AnnualPeriod] = field(default_factory=list)
@@ -189,6 +238,24 @@ class Result:
     pass_roic: bool
     roic_applied: bool       # True only when ROIC was an active gate (Track A + strict)
 
+    # earnings-quality gate (cumulative adjusted-FCF / net-income; profitable names only)
+    pass_earnings_quality: bool         # True (never fails) when not applicable
+    earnings_quality_applicable: bool   # False when cumulative NI <= 0 or no usable years
+    earnings_quality_ratio: float | None
+    earnings_quality_years: int         # actual window used (< EARNINGS_QUALITY_WINDOW if thin)
+
+    # entry-timing annotations (INFORMATIONAL ONLY — the screen answers "what is
+    # worth owning", not "when to buy"; these never touch verdicts or ranking)
+    pct_off_ath: float | None           # distance from all-time high, % (<= 0 typically)
+    three_month_return: float | None    # trailing 3-month total return, % (None: young/no data)
+    hot: bool                           # 3-mo return > +50% AND within 20% of ATH
+
+    # watchlist unlock prices (set ONLY on a WATCHLIST result; else None) — the
+    # pre-computed buy triggers: the price at which the failed valuation filter
+    # would clear, on the same share count / revenue base as the P/S itself
+    unlock_ps_price: float | None       # price where P/S == 0.5 x growth% (None: growth <= 0)
+    unlock_peg_price: float | None      # price where PEG == 2.0 (None: PEG wasn't the blocker)
+
     # verdict
     status: ScreenStatus
     track_a: bool
@@ -204,6 +271,14 @@ class Result:
     # default ranking — it cannot change passed / track / rank.
     sector_context: "SectorContext | None" = None
 
+    # Multi-year ROIC durability (advisory — None when the name never reached a
+    # snapshot qualifier, mirroring ``consistency``). Never gates the verdict.
+    roic_history: "RoicHistory | None" = None
+
+    # Multi-year gross-margin level & stability (advisory — same lifecycle as
+    # ``roic_history``). Never gates the verdict, never appears in ranking.
+    margin_profile: "MarginProfile | None" = None
+
     @property
     def passed(self) -> bool:
         return self.status is ScreenStatus.PASS
@@ -218,6 +293,20 @@ class Result:
         """True ONLY for a snapshot qualifier demoted for lacking annual history —
         a snapshot-failing name is a normal rejection and never lands in that bucket."""
         return self.status is ScreenStatus.INSUFFICIENT_HISTORY
+
+    @property
+    def recent_ipo(self) -> bool:
+        return self.status is ScreenStatus.RECENT_IPO
+
+    @property
+    def watchlist(self) -> bool:
+        """Quality passed, only valuation failed — a patience case with a buy trigger."""
+        return self.status is ScreenStatus.WATCHLIST
+
+    @property
+    def ipo_date_unknown(self) -> bool:
+        """The source exposed no first-trading date — screened normally, flagged."""
+        return self.company.ipo_date is None
 
     @property
     def ticker(self) -> str:
@@ -271,19 +360,27 @@ def _period_metrics(
 
 
 def evaluate(c: Company, consistency_years: int = 0,
-             consistency_mode: str = "strict") -> Result:
+             consistency_mode: str = "strict",
+             ipo_seasoning_months: int = IPO_SEASONING_MONTHS,
+             today: date | None = None) -> Result:
     """Apply the screen to one company and return a fully populated Result.
 
     Order of operations: a **pre-revenue firewall** fires first (no metric math
     on a name with no revenue); then the snapshot four-filter / two-track routing
     (UNCHANGED); then — only for a snapshot qualifier — the current-snapshot
-    balance-sheet gates and the multi-year consistency gate.
+    balance-sheet gates and the multi-year consistency gate. Finally, a name
+    whose first trading date falls inside the last ``ipo_seasoning_months`` is
+    reclassified ``RECENT_IPO`` regardless of the underlying verdict — recent
+    IPOs structurally break the history-based inputs and carry hostile base
+    rates, so they are set aside visibly rather than screened as normal names
+    (an unknown IPO date is flagged, never guessed).
 
     ``consistency_years`` of 0 (the default) bypasses the historical gate while
     leaving the pre-revenue and balance-sheet gates active. ``consistency_mode``
     selects the Track-A durability rule (``"strict"`` = Rule of 40 in every year,
     the default for library callers; ``"trend"`` = trajectory-aware). Track B is
-    unaffected by the mode.
+    unaffected by the mode. ``today`` exists so the pure module stays testable
+    without patching the clock; it defaults to the real current date.
     """
     # 1. Pre-revenue firewall — the FIRST check, before any metric math.
     if c.revenue_ttm <= 0:
@@ -341,9 +438,14 @@ def evaluate(c: Company, consistency_years: int = 0,
     # CRITICAL: routing is gated on GAAP profitability, NOT on whether PEG is
     # computable. A profitable name must clear PEG via Track A (and is barred
     # from Track B even when PEG is N/A); only a GAAP-unprofitable name is
-    # eligible for the PEG-exempt Track B.
-    track_a = gaap_profitable and pass_sbc and pass_rule40 and pass_ps and pass_peg
-    track_b = (not gaap_profitable) and pass_sbc and pass_rule40 and pass_ps and quality_gate
+    # eligible for the PEG-exempt Track B. The quality_* flags are the same
+    # routing with the valuation filters (P/S, PEG) removed — they exist ONLY
+    # to detect the WATCHLIST case (quality passed, valuation the sole blocker)
+    # and never loosen the tracks themselves.
+    quality_a = gaap_profitable and pass_sbc and pass_rule40
+    quality_b = (not gaap_profitable) and pass_sbc and pass_rule40 and quality_gate
+    track_a = quality_a and pass_ps and pass_peg
+    track_b = quality_b and pass_ps
 
     # Balance-sheet gates. Leverage + goodwill apply to ALL snapshot qualifiers;
     # ROIC is gated only for a Track-A name under strict mode (advisory otherwise).
@@ -352,7 +454,20 @@ def evaluate(c: Company, consistency_years: int = 0,
     pass_roic = roic is None or roic >= ROIC_MIN
     roic_applied = track_a and consistency_mode == "strict"
 
+    # Earnings quality: cumulative adjusted-FCF / net-income over the trailing
+    # window. N/A (never fails) when not applicable (unprofitable cumulatively,
+    # or no net-income history); applies to any snapshot qualifier, either track.
+    eq_applicable, eq_ratio, eq_years, pass_earnings_quality = _earnings_quality(c.history)
+
+    # Entry timing (informational): % off ATH, 3-month return, and the HOT flag
+    # for the downstream anti-FOMO entry rule. Never feeds a gate or the rank.
+    pct_off_ath, three_month_return, hot = _entry_timing(c)
+
     consistency: ConsistencyResult | None = None
+    roic_hist: RoicHistory | None = None
+    margin_prof: MarginProfile | None = None
+    unlock_ps_price: float | None = None
+    unlock_peg_price: float | None = None
 
     if not evaluable:
         status = ScreenStatus.NOT_EVALUABLE
@@ -365,12 +480,48 @@ def evaluate(c: Company, consistency_years: int = 0,
             gaap_profitable, pass_sbc, pass_rule40, pass_ps, quality_gate,
             sbc_pct, rule40, p_s, growth, peg,
         )
+        # WATCHLIST candidacy: every quality gate passed and ONLY valuation
+        # (P/S and/or a computable-but-failed PEG) blocked a track. The same
+        # balance-sheet / earnings-quality / consistency gates are then run on
+        # the would-be track — a name failing any of those stays plain REJECTED
+        # (per the fixed architecture, a snapshot failer's hypothetical gates
+        # are moot, so their outcomes are not attached or reported). A
+        # profitable name whose PEG is N/A is NOT a candidate: no price fixes
+        # missing forward estimates, and Track B stays barred.
+        eligible = (quality_a and peg is not None) or quality_b
+        if eligible:
+            wl_roic_applied = quality_a and consistency_mode == "strict"
+            wl_bs_reasons = _balance_sheet_reasons(
+                pass_leverage, pass_goodwill, wl_roic_applied, pass_roic,
+                net_debt, fcf, net_debt_to_fcf, goodwill_to_assets, roic,
+                eq_applicable, pass_earnings_quality, eq_ratio, eq_years,
+            )
+            wl_consistency = None
+            if consistency_years > 0:
+                wl_consistency = (
+                    track_a_consistency(c.history, consistency_years, consistency_mode)
+                    if quality_a else track_b_consistency(c.history, consistency_years)
+                )
+            if not wl_bs_reasons and (
+                wl_consistency is None
+                or wl_consistency.status is ConsistencyStatus.PASS
+            ):
+                status = ScreenStatus.WATCHLIST
+                consistency = wl_consistency
+                roic_hist = roic_history(c.history)
+                margin_prof = margin_profile(c.history)
+                unlock_ps_price, unlock_peg_price = _unlock_prices(
+                    c, growth, p_s, peg, quality_a, pass_ps, pass_peg,
+                )
     else:
         # A snapshot track cleared — layer the balance-sheet and consistency gates.
         track = "Track A" if track_a else "Track B"
+        roic_hist = roic_history(c.history)
+        margin_prof = margin_profile(c.history)
         bs_reasons = _balance_sheet_reasons(
             pass_leverage, pass_goodwill, roic_applied, pass_roic,
             net_debt, fcf, net_debt_to_fcf, goodwill_to_assets, roic,
+            eq_applicable, pass_earnings_quality, eq_ratio, eq_years,
         )
         if consistency_years > 0:
             consistency = (
@@ -403,6 +554,20 @@ def evaluate(c: Company, consistency_years: int = 0,
             status = ScreenStatus.PASS
             reasons = []
 
+    # 3. IPO-seasoning override — LAST, unconditional (mirrors how
+    # INSUFFICIENT_HISTORY keeps a name out of the shortlist): whatever the
+    # gates decided, an unseasoned listing is reported in its own section.
+    if _ipo_is_recent(c.ipo_date, ipo_seasoning_months, today or date.today()):
+        status = ScreenStatus.RECENT_IPO
+        track = "—"
+        reasons = [
+            f"recent IPO (listed {c.ipo_date}, "
+            f"< {ipo_seasoning_months} mo seasoning)"
+        ]
+        # Unlock prices are WATCHLIST buy triggers — an unseasoned listing has
+        # no actionable trigger, so a would-be-WATCHLIST name sheds them here.
+        unlock_ps_price = unlock_peg_price = None
+
     return Result(
         company=c,
         growth=growth, fcf=fcf, adj_fcf=adj_fcf, adj_margin=adj_margin,
@@ -413,9 +578,98 @@ def evaluate(c: Company, consistency_years: int = 0,
         pass_peg=pass_peg, quality_gate=quality_gate,
         pass_leverage=pass_leverage, pass_goodwill=pass_goodwill,
         pass_roic=pass_roic, roic_applied=roic_applied,
+        pass_earnings_quality=pass_earnings_quality,
+        earnings_quality_applicable=eq_applicable,
+        earnings_quality_ratio=eq_ratio, earnings_quality_years=eq_years,
+        pct_off_ath=pct_off_ath, three_month_return=three_month_return, hot=hot,
+        unlock_ps_price=unlock_ps_price, unlock_peg_price=unlock_peg_price,
         status=status, track_a=track_a, track_b=track_b,
         track=track, reasons=reasons, consistency=consistency,
+        roic_history=roic_hist, margin_profile=margin_prof,
     )
+
+
+def _unlock_prices(
+    c: Company, growth: float, p_s: float, peg: float | None,
+    track_a_like: bool, pass_ps: bool, pass_peg: bool,
+) -> tuple[float | None, float | None]:
+    """``(unlock_ps_price, unlock_peg_price)`` — the WATCHLIST buy triggers.
+
+    Both filters scale linearly with price on the SAME share count / revenue
+    base as the P/S computation itself (implied price = market_cap / diluted
+    shares), so each unlock is the current implied price scaled by the ratio of
+    the filter's ceiling to its current value:
+
+    * P/S:  price where ``P/S == 0.5 x growth%`` — N/A when growth <= 0 (the
+      guardrail is then non-positive: no price fixes a shrinking company, it
+      must re-qualify on quality first).
+    * PEG:  price where ``PEG == 2.0`` — only when PEG was actually the blocker
+      (a Track-B-like name has no PEG concept).
+
+    A filter that already passes needs no unlock and stays None.
+    """
+    if not c.diluted_shares_now or p_s <= 0:
+        return None, None
+    implied_price = c.market_cap / c.diluted_shares_now
+    unlock_ps = None
+    if not pass_ps and growth > 0:
+        unlock_ps = implied_price * (PS_GUARDRAIL_FACTOR * growth / p_s)
+    unlock_peg = None
+    if track_a_like and not pass_peg and peg is not None and peg > 0:
+        unlock_peg = implied_price * (PEG_MAX / peg)
+    return unlock_ps, unlock_peg
+
+
+def _entry_timing(c: Company) -> tuple[float | None, float | None, bool]:
+    """``(pct_off_ath, three_month_return, hot)`` from the adjusted price snapshot.
+
+    The screen answers "what is worth owning", deliberately not "when to buy" —
+    but the downstream human workflow applies an anti-FOMO entry rule (no initial
+    buy into a parabolic move near highs), and checking that mechanically for
+    every survivor is exactly what a tool should absorb. HOT = trailing 3-month
+    return > +50% AND price within 20% of the all-time high; it marks a
+    *patience* case, never a rejection. Missing prices -> None (rendered N/A),
+    never a fabricated level; a listing younger than 3 months has no 3-month
+    return by construction.
+    """
+    pct_off_ath = (
+        pct(c.current_price - c.ath_price, c.ath_price)
+        if c.current_price is not None and c.ath_price else None
+    )
+    three_month_return = (
+        pct(c.current_price - c.price_3mo_ago, c.price_3mo_ago)
+        if c.current_price is not None and c.price_3mo_ago else None
+    )
+    hot = (
+        three_month_return is not None and three_month_return > HOT_3MO_RETURN_MIN
+        and pct_off_ath is not None and pct_off_ath >= -HOT_ATH_PROXIMITY_PCT
+    )
+    return pct_off_ath, three_month_return, hot
+
+
+def _months_before(today: date, months: int) -> date:
+    """The calendar date ``months`` months before ``today`` (day clamped to month end)."""
+    total = today.year * 12 + (today.month - 1) - months
+    year, month0 = divmod(total, 12)
+    month = month0 + 1
+    day = min(today.day, monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def _ipo_is_recent(ipo_date: str | None, months: int, today: date) -> bool:
+    """True when a parseable first-trading date falls inside the seasoning window.
+
+    ``None`` (unknown) and unparseable dates are NOT recent — never guess; such
+    names are screened normally and surfaced via ``Result.ipo_date_unknown``.
+    A non-positive ``months`` disables the check entirely.
+    """
+    if ipo_date is None or months <= 0:
+        return False
+    try:
+        listed = date.fromisoformat(str(ipo_date)[:10])
+    except ValueError:
+        return False
+    return listed > _months_before(today, months)
 
 
 def _pre_revenue_result(c: Company) -> Result:
@@ -429,6 +683,10 @@ def _pre_revenue_result(c: Company) -> Result:
         pass_sbc=False, pass_rule40=False, pass_ps=False, pass_peg=False,
         quality_gate=False, pass_leverage=False, pass_goodwill=False,
         pass_roic=False, roic_applied=False,
+        pass_earnings_quality=False, earnings_quality_applicable=False,
+        earnings_quality_ratio=None, earnings_quality_years=0,
+        pct_off_ath=None, three_month_return=None, hot=False,
+        unlock_ps_price=None, unlock_peg_price=None,
         status=ScreenStatus.PRE_REVENUE, track_a=False, track_b=False,
         track="—", reasons=["pre-revenue (revenue_ttm <= 0)"], consistency=None,
     )
@@ -438,11 +696,15 @@ def _balance_sheet_reasons(
     pass_leverage: bool, pass_goodwill: bool, roic_applied: bool, pass_roic: bool,
     net_debt: float, fcf: float, net_debt_to_fcf: float,
     goodwill_to_assets: float, roic: float | None,
+    eq_applicable: bool = False, pass_earnings_quality: bool = True,
+    eq_ratio: float | None = None, eq_years: int = 0,
 ) -> list[str]:
     """All failing balance-sheet-gate reasons for a snapshot qualifier (no short-circuit).
 
     ROIC contributes a reason only when it was an active gate (Track A + strict)
     AND a value was computable; a not-computable ROIC is advisory, never a fail.
+    Earnings quality contributes a reason only when applicable (cumulative net
+    income > 0 over the trailing window) AND it failed.
     """
     reasons: list[str] = []
     if not pass_leverage:
@@ -462,6 +724,11 @@ def _balance_sheet_reasons(
             )
     if roic_applied and roic is not None and not pass_roic:
         reasons.append(f"ROIC = {roic * 100:.1f}% (< {ROIC_MIN * 100:.0f}%)")
+    if eq_applicable and not pass_earnings_quality:
+        reasons.append(
+            f"earnings quality: cumulative {eq_years}-yr AdjFCF/NI = {eq_ratio:.2f} "
+            f"(< {EARNINGS_QUALITY_MIN:.1f})"
+        )
     return reasons
 
 
@@ -500,6 +767,131 @@ def _rejection_reasons(
         # Unprofitable -> Track B only; rejection comes from the quality gate.
         reasons.append("fails Track B quality gate (adj FCF<=0 or dilution>=growth)")
     return reasons or ["did not clear either track"]
+
+
+# ---------------------------------------------------------------------------
+# ROIC history (advisory, multi-year durable-moat proxy) — pure, no IO
+# ---------------------------------------------------------------------------
+@dataclass
+class RoicHistory:
+    """Multi-year ROIC trajectory for one company — advisory only, never a gate.
+
+    A single-year ROIC is noisy (one restructuring charge or a cyclical margin
+    peak can swing it violently); the median over up to 10 years of history is
+    a much stronger proxy for a durable moat — a company that clears its cost
+    of capital by a wide, repeated spread rather than one great year.
+    """
+
+    median: float | None    # None when no year had a usable ROIC
+    years_used: int         # count of years actually used in the median
+    durable: bool           # median >= ROIC_DURABLE_MIN over >= ROIC_DURABLE_YEARS
+    note: str = ""          # e.g. "insufficient ROIC history" (advisory, informational)
+
+
+def roic_history(history: list[AnnualPeriod]) -> RoicHistory:
+    """Median ROIC (pre-tax operating income / invested capital) over available years.
+
+    Up to the last 10 annual periods are considered. A year is skipped (never
+    fabricated) when ``operating_income`` is absent, or when invested capital
+    (``total_debt + total_equity - cash_and_equivalents``) is <= 0 for that year.
+    Fewer than :data:`ROIC_HISTORY_MIN_YEARS` usable years is flagged as thin
+    evidence but is still reported honestly, never withheld or padded.
+    """
+    values: list[float] = []
+    for p in history[-10:]:
+        if p.operating_income is None:
+            continue
+        if p.total_debt is None or p.total_equity is None or p.cash_and_equivalents is None:
+            continue
+        invested_capital = p.total_debt + p.total_equity - p.cash_and_equivalents
+        if invested_capital <= 0:
+            continue
+        values.append(p.operating_income / invested_capital)
+
+    if not values:
+        return RoicHistory(None, 0, False, note="no usable ROIC years")
+
+    med = median(values)
+    years_used = len(values)
+    durable = med >= ROIC_DURABLE_MIN and years_used >= ROIC_DURABLE_YEARS
+    note = "insufficient ROIC history" if years_used < ROIC_HISTORY_MIN_YEARS else ""
+    return RoicHistory(med, years_used, durable, note=note)
+
+
+# ---------------------------------------------------------------------------
+# Gross-margin level & stability (advisory, multi-year) — pure, no IO
+# ---------------------------------------------------------------------------
+@dataclass
+class MarginProfile:
+    """Multi-year gross-margin level + stability — advisory only, never a gate.
+
+    Gross margin is where pricing power shows up first: a high AND stable
+    margin through cycles means customers keep paying up and competitors can't
+    force discounting. Hard-gating on it would double-punish capital-intensive
+    sectors the screen is already structurally biased against, so this stays
+    purely informational.
+    """
+
+    gm_latest: float | None    # most recent usable year's gross margin, %
+    gm_stddev: float | None    # population stddev of gross margin, percentage points
+    years_used: int
+    pricing_power: bool        # gm_latest >= 40, stddev < 5pp, over >= 5 usable years
+    not_applicable: bool       # zero usable years (e.g. banks/insurers -> no COGS line)
+
+
+def margin_profile(history: list[AnnualPeriod]) -> MarginProfile:
+    """Gross-margin level (latest) and stability (stddev) over available years.
+
+    Up to the last 10 annual periods are considered; a year is skipped (never
+    fabricated) when ``cogs`` is absent — the expected case for banks/insurers,
+    which don't report a cost-of-revenue line. Zero usable years is flagged
+    ``not_applicable`` rather than reporting a misleading N/A-as-zero margin.
+    """
+    usable = [(p.fiscal_label, pct(p.revenue - p.cogs, p.revenue))
+              for p in history[-10:] if p.cogs is not None]
+
+    if not usable:
+        return MarginProfile(None, None, 0, False, not_applicable=True)
+
+    values = [v for _, v in usable]
+    gm_latest = values[-1]
+    years_used = len(values)
+    gm_stddev = pstdev(values)
+    pricing_power = (
+        gm_latest >= PRICING_POWER_GM_MIN
+        and gm_stddev < PRICING_POWER_STDDEV_MAX
+        and years_used >= PRICING_POWER_MIN_YEARS
+    )
+    return MarginProfile(gm_latest, gm_stddev, years_used, pricing_power, not_applicable=False)
+
+
+# ---------------------------------------------------------------------------
+# Earnings-quality gate (rejecting; balance-sheet-gate family) — pure, no IO
+# ---------------------------------------------------------------------------
+def _earnings_quality(history: list[AnnualPeriod]) -> tuple[bool, float | None, int, bool]:
+    """Cumulative adjusted-FCF / net-income ratio over the last
+    :data:`EARNINGS_QUALITY_WINDOW` years — the classic accounting red flag for
+    profits that never become cash (aggressive revenue recognition, ballooning
+    receivables, capitalized costs). A single year is noisy from working-capital
+    swings, so this cumulates; :data:`EARNINGS_QUALITY_MIN` tolerates normal
+    timing noise while catching persistent accrual inflation.
+
+    Returns ``(applicable, ratio, years_used, passed)``. **N/A, never a fail**,
+    when no year in the window has a net-income figure, or cumulative net income
+    is <= 0 (Track B's own FCF gate already covers unprofitable names). Uses
+    only the years that actually carry a net-income figure — never fabricated —
+    so ``years_used`` can be less than the configured window.
+    """
+    window = [p for p in history[-EARNINGS_QUALITY_WINDOW:] if p.net_income is not None]
+    years_used = len(window)
+    if years_used == 0:
+        return False, None, 0, True
+    cum_ni = sum(p.net_income for p in window)
+    if cum_ni <= 0:
+        return False, None, years_used, True
+    cum_adj_fcf = sum(p.ocf - p.capex - p.sbc for p in window)
+    ratio = cum_adj_fcf / cum_ni
+    return True, ratio, years_used, ratio >= EARNINGS_QUALITY_MIN
 
 
 # ---------------------------------------------------------------------------

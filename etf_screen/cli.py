@@ -22,7 +22,7 @@ from tabulate import tabulate
 
 from . import __version__, export as export_mod
 from .cache import DiskCache
-from .constituents import holdings_from_csv, resolve
+from .constituents import holdings_from_csv, resolve, tickers_from_file
 from .overrides import apply_override, company_from_override, load_overrides
 from .providers import PROVIDERS, DataProvider, DataUnavailable
 from .screen import Result, ScreenStatus, annotate_sector_context, evaluate, rank
@@ -48,6 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
                         "SSGA, ...); overrides --universe")
     p.add_argument("--tickers",
                    help="comma-separated tickers to screen instead of a universe")
+    p.add_argument("--tickers-file", default=None,
+                   help="path to a curated ticker-list file (one per line, # comments; "
+                        "see universes/); same role as --tickers")
     p.add_argument("--limit", type=int, default=None,
                    help="screen at most N tickers (useful for cheap validation)")
     p.add_argument("--refresh", action="store_true",
@@ -75,17 +78,26 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Track-A durability rule: 'trend' (default, trajectory-aware "
                         "— recency anchor + average + no lumpy collapse) or 'strict' "
                         "(Rule of 40 in every year). Track B is unaffected.")
+    p.add_argument("--ipo-seasoning-months", type=int, default=12,
+                   help="names listed within the last N months are set aside as "
+                        "RECENT_IPO, never in the shortlist (default: 12; 0 disables)")
     return p
 
 
 def _resolve_universe(args) -> tuple[list[str], str, str, bool, dict[str, str], str]:
     """Return (tickers, source, as_of, is_stale, names, label) for the universe.
 
-    Precedence: explicit ``--tickers`` > a ``--holdings`` CSV > a named ``--universe``.
+    Precedence: explicit ``--tickers`` > a ``--tickers-file`` list > a
+    ``--holdings`` CSV > a named ``--universe``.
     """
     if args.tickers:
         tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
         return tickers, "explicit --tickers", date.today().isoformat(), False, {}, "tickers"
+    if args.tickers_file:
+        path = Path(args.tickers_file)
+        tickers = tickers_from_file(path)
+        return (tickers, f"tickers file: {path.name}", date.today().isoformat(),
+                False, {}, path.stem)
     if args.holdings:
         h = holdings_from_csv(args.holdings)
         return h.tickers, h.source, h.as_of, h.is_stale, h.names, h.etf.lower()
@@ -105,14 +117,15 @@ def _make_provider(args) -> DataProvider:
 
 
 def _screen_one(provider, ticker, override, consistency_years=0,
-                consistency_mode="trend") -> Result | Skipped:
+                consistency_mode="trend", ipo_seasoning_months=12) -> Result | Skipped:
     """Fetch + (optionally override) + evaluate one ticker, or report it skipped."""
     try:
         company = provider.fetch(ticker)
         if override:
             company = apply_override(company, override)
         return evaluate(company, consistency_years=consistency_years,
-                        consistency_mode=consistency_mode)
+                        consistency_mode=consistency_mode,
+                        ipo_seasoning_months=ipo_seasoning_months)
     except DataUnavailable as exc:
         if override:  # provider had nothing, but the user supplied verified data
             rescued = company_from_override(ticker, override)
@@ -120,7 +133,8 @@ def _screen_one(provider, ticker, override, consistency_years=0,
                 # An override-rescued name carries no annual history, so the gate
                 # will route it to INSUFFICIENT_HISTORY when enabled.
                 return evaluate(rescued, consistency_years=consistency_years,
-                                consistency_mode=consistency_mode)
+                                consistency_mode=consistency_mode,
+                                ipo_seasoning_months=ipo_seasoning_months)
         return Skipped(ticker, str(exc))
     except Exception as exc:  # unexpected provider/parse error -> report, skip
         return Skipped(ticker, f"unexpected error: {exc}")
@@ -142,7 +156,8 @@ def run(args) -> int:
     for i, ticker in enumerate(tickers):
         outcome = _screen_one(provider, ticker, overrides.get(ticker),
                               consistency_years=args.consistency_years,
-                              consistency_mode=args.consistency_mode)
+                              consistency_mode=args.consistency_mode,
+                              ipo_seasoning_months=args.ipo_seasoning_months)
         (skipped if isinstance(outcome, Skipped) else results).append(outcome)
         if args.throttle and i < len(tickers) - 1:
             time.sleep(args.throttle)
@@ -172,11 +187,15 @@ def _do_export(args, source, as_of, results, skipped, names, label) -> None:
 def _report(args, source, as_of, stale, tickers, results, skipped, names,
             sector_stats, label) -> None:
     survivors = rank(results, mode=args.rank)
-    # PRE_REVENUE and INSUFFICIENT_HISTORY names each get their own section; keep
-    # them out of the ordinary rejection list (a failed-gate name stays a normal reject).
+    # PRE_REVENUE, INSUFFICIENT_HISTORY, and RECENT_IPO names each get their own
+    # section; keep them out of the ordinary rejection list (a failed-gate name
+    # stays a normal reject).
     pre_revenue = [r for r in results if r.status is ScreenStatus.PRE_REVENUE]
     insufficient = [r for r in results if r.insufficient_history]
+    recent_ipos = [r for r in results if r.recent_ipo]
+    watchlist = [r for r in results if r.watchlist]
     rejected = [r for r in results if not r.passed and not r.insufficient_history
+                and not r.recent_ipo and not r.watchlist
                 and r.status is not ScreenStatus.PRE_REVENUE]
     sbc_assumed = [r for r in results if r.sbc_assumed_zero]
     bs_assumed = [r for r in results
@@ -200,13 +219,20 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
     print(f"  evaluated       : {len(results)}")
     print(f"  could not source: {len(skipped)}")
     print(f"  passed          : {len(survivors)}")
+    print(f"  watchlist       : {len(watchlist)} (quality passed, valuation failed)")
     print(f"  rejected        : {len(rejected)}")
     if pre_revenue:
         print(f"  pre-revenue     : {len(pre_revenue)} (firewall — no metric math)")
+    if recent_ipos:
+        print(f"  recent IPOs     : {len(recent_ipos)} "
+              f"(< {args.ipo_seasoning_months} mo seasoning — set aside)")
     print("  rejected by balance-sheet gate (names may fail more than one):")
     print(f"    Leverage >3x  : {sum(1 for r in rejected if not r.pass_leverage)}")
     print(f"    Goodwill >40% : {sum(1 for r in rejected if not r.pass_goodwill)}")
     print(f"    ROIC <10%     : {sum(1 for r in rejected if r.roic_applied and not r.pass_roic)}")
+    eq_fails = sum(1 for r in rejected
+                   if r.earnings_quality_applicable and not r.pass_earnings_quality)
+    print(f"    Earnings qlty : {eq_fails}")
     if args.consistency_years:
         print(f"  consistency gate: {gated_out} demoted, "
               f"{len(insufficient)} insufficient history "
@@ -228,11 +254,14 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
             _f(r.growth), _f(r.adj_margin), _f(r.rule40), _f(r.p_s, 1),
             _f(r.dilution), _f(r.sbc_pct), _peg(r.peg),
             _f(r.net_debt_to_fcf, 1), _pct(r.goodwill_to_assets, 0), _pct(r.roic),
+            _roic_hist(r), _eq_ratio(r), _gm(r),
+            _f(r.pct_off_ath), _f(r.three_month_return),
             export_mod.rule40_hist(r),
         ] for i, r in enumerate(survivors)]
         headers = ["#", "Ticker", "Company", "Sector", "Track", "Growth%",
                    "AdjFCF%", "Rule40", "P/S", "Dil%", "SBC%", "PEG",
-                   "NetDebt/FCF", "GW/Assets%", "ROIC%", "Rule40 Hist"]
+                   "NetDebt/FCF", "GW/Assets%", "ROIC%", "ROIC Med(y)", "EQ(y)",
+                   "GM% (σ,y)", "ATH%", "3M%", "Rule40 Hist"]
         print(tabulate(rows, headers=headers, floatfmt=".1f"))
     else:
         print("  (empty — a strict screen producing no survivors is a valid result)")
@@ -249,6 +278,15 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
                   f"(Rule40 {_f(r.rule40)}, P/S {_f(r.p_s, 1)} vs guardrail "
                   f"{_f(r.ps_guardrail, 1)}, SBC {_f(r.sbc_pct)}%"
                   f"{', PEG ' + _peg(r.peg) if r.peg else ''}){_flags(r)}")
+
+    # --- watchlist: quality passed, valuation failed — pre-computed buy triggers ---
+    if watchlist:
+        print(f"\nWATCHLIST ({len(watchlist)}) — wonderful business, wrong price; "
+              f"unlock = the price at which the failed valuation filter clears "
+              f"(computed on a calm day, not under FOMO):")
+        for r in watchlist:
+            print(f"  {r.ticker} ({_short(r.name)}): {'; '.join(r.reasons)}"
+                  f" -> {_unlocks(r)}{_flags(r)}")
 
     if rejected:
         print("\nWhy names were rejected:")
@@ -284,6 +322,14 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
               f"fired before any metric math:")
         for r in pre_revenue:
             print(f"  {r.ticker} ({_short(r.name)})")
+
+    # --- recent IPOs (unseasoned listings — set aside, never in the shortlist) ---
+    if recent_ipos:
+        print(f"\nRECENT_IPO ({len(recent_ipos)}) — listed within the last "
+              f"{args.ipo_seasoning_months} months; history-based gates have no "
+              f"history and IPO-year base rates are hostile. Revisit once seasoned:")
+        for r in recent_ipos:
+            print(f"  {r.ticker} ({_short(r.name)}): listed {r.company.ipo_date}")
 
     # --- insufficient history (cleared the snapshot, lacked annual history) ---
     if insufficient:
@@ -369,12 +415,47 @@ def _pct(x, nd: int = 1) -> str:
     return "N/A" if x is None or isnan(x) else f"{x * 100:.{nd}f}"
 
 
+def _roic_hist(r: Result) -> str:
+    """Render the multi-year ROIC-history annotation, e.g. '18.2 (7y)'."""
+    rh = r.roic_history
+    if rh is None or rh.median is None:
+        return "N/A"
+    return f"{rh.median * 100:.1f} ({rh.years_used}y)"
+
+
+def _eq_ratio(r: Result) -> str:
+    """Render the earnings-quality ratio, e.g. '1.25 (3y)'; N/A when not applicable."""
+    if not r.earnings_quality_applicable or r.earnings_quality_ratio is None:
+        return "N/A"
+    return f"{r.earnings_quality_ratio:.2f} ({r.earnings_quality_years}y)"
+
+
+def _unlocks(r: Result) -> str:
+    """Render a watchlist name's buy trigger(s), e.g. 'unlock: P/S $172.10, PEG $186.40'."""
+    parts = []
+    if r.unlock_ps_price is not None:
+        parts.append(f"P/S ${r.unlock_ps_price:,.2f}")
+    if r.unlock_peg_price is not None:
+        parts.append(f"PEG ${r.unlock_peg_price:,.2f}")
+    if not parts:
+        return "unlock N/A (growth <= 0 — must re-qualify on quality, not price)"
+    return "unlock: " + ", ".join(parts)
+
+
+def _gm(r: Result) -> str:
+    """Render the gross-margin annotation, e.g. '75.0 (σ0.1, 6y)'; N/A when not applicable."""
+    mp = r.margin_profile
+    if mp is None or mp.not_applicable or mp.gm_latest is None:
+        return "N/A"
+    return f"{mp.gm_latest:.1f} (σ{mp.gm_stddev:.1f}, {mp.years_used}y)"
+
+
 def _short(s: str, n: int = 24) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
 def _flags(r: Result) -> str:
-    """Render basis / override / low-confidence annotations for a result line."""
+    """Render basis / override / low-confidence / advisory annotations for a result line."""
     tags = []
     if r.manual_override:
         tags.append("manual override: " + ", ".join(r.company.overridden_fields))
@@ -382,6 +463,14 @@ def _flags(r: Result) -> str:
         tags.append(f"basis: {r.basis}")
     if r.company.low_confidence:
         tags.append("low-confidence: " + ", ".join(r.company.low_confidence))
+    if r.roic_history and r.roic_history.durable:
+        tags.append("roic_durable")
+    if r.margin_profile and r.margin_profile.pricing_power:
+        tags.append("pricing_power")
+    if r.margin_profile and r.margin_profile.not_applicable:
+        tags.append("gm_not_applicable")
+    if r.hot:
+        tags.append("HOT: parabolic near ATH — patience case, not a rejection")
     return f"  [{' | '.join(tags)}]" if tags else ""
 
 

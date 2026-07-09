@@ -22,7 +22,12 @@ COLUMNS = [
     "ticker", "name", "sector", "track", "status", "passed", "growth_pct",
     "adj_fcf_margin_pct", "rule40", "p_s", "ps_guardrail", "dilution_pct",
     "sbc_pct", "peg", "net_debt_to_fcf", "goodwill_to_assets", "roic",
-    "net_income_ttm", "rule40_hist", "consistency",
+    "roic_median", "roic_years", "roic_durable",
+    "earnings_quality_ratio", "earnings_quality_years", "earnings_quality_applicable",
+    "gm_latest", "gm_stddev", "gm_years", "pricing_power", "gm_not_applicable",
+    "pct_off_ath", "three_month_return", "hot", "price_history_years",
+    "unlock_ps_price", "unlock_peg_price",
+    "net_income_ttm", "rule40_hist", "consistency", "ipo_date",
     "sector_med_rule40", "sector_med_ps", "sector_med_peg",
     "basis", "sbc_assumed_zero", "manual_override", "reason", "low_confidence",
 ]
@@ -73,6 +78,28 @@ def consistency_status(r: Result) -> str:
     return r.consistency.status.name if r.consistency is not None else "—"
 
 
+def _roic_median(r: Result) -> str:
+    if r.roic_history is None or r.roic_history.median is None:
+        return "N/A"
+    return _num(r.roic_history.median * 100)
+
+
+def _roic_years(r: Result):
+    return r.roic_history.years_used if r.roic_history else ""
+
+
+def _roic_durable(r: Result):
+    return r.roic_history.durable if r.roic_history else False
+
+
+def _gm_field(r: Result, attr: str, nd: int = 1):
+    mp = r.margin_profile
+    if mp is None or mp.not_applicable:
+        return "N/A"
+    val = getattr(mp, attr)
+    return "N/A" if val is None else _num(val, nd)
+
+
 def _result_row(r: Result) -> dict:
     return {
         "ticker": r.ticker, "name": r.name, "sector": r.sector, "track": r.track,
@@ -82,8 +109,22 @@ def _result_row(r: Result) -> dict:
         "dilution_pct": _num(r.dilution), "sbc_pct": _num(r.sbc_pct),
         "peg": _num(r.peg), "net_debt_to_fcf": _num(r.net_debt_to_fcf),
         "goodwill_to_assets": _num(r.goodwill_to_assets), "roic": _num(r.roic),
+        "roic_median": _roic_median(r), "roic_years": _roic_years(r),
+        "roic_durable": _roic_durable(r),
+        "earnings_quality_ratio": _num(r.earnings_quality_ratio, 2),
+        "earnings_quality_years": r.earnings_quality_years,
+        "earnings_quality_applicable": r.earnings_quality_applicable,
+        "gm_latest": _gm_field(r, "gm_latest"), "gm_stddev": _gm_field(r, "gm_stddev"),
+        "gm_years": _gm_field(r, "years_used", 0),
+        "pricing_power": bool(r.margin_profile and r.margin_profile.pricing_power),
+        "gm_not_applicable": bool(r.margin_profile and r.margin_profile.not_applicable),
+        "pct_off_ath": _num(r.pct_off_ath), "three_month_return": _num(r.three_month_return),
+        "hot": r.hot, "price_history_years": _num(r.company.price_history_years, 1),
+        "unlock_ps_price": _num(r.unlock_ps_price),
+        "unlock_peg_price": _num(r.unlock_peg_price),
         "net_income_ttm": _num(r.company.net_income_ttm),
         "rule40_hist": rule40_hist(r), "consistency": consistency_status(r),
+        "ipo_date": r.company.ipo_date or "unknown",
         "sector_med_rule40": _sector_med(r, "rule40"),
         "sector_med_ps": _sector_med(r, "p_s"), "sector_med_peg": _sector_med(r, "peg"),
         "basis": r.basis,
@@ -102,8 +143,9 @@ def _skipped_row(ticker: str, name: str, reason: str) -> dict:
 
 
 def build_rows(results: list[Result], skipped, names: dict[str, str]) -> list[dict]:
-    """Survivors+rejected first (passed first, then by Rule of 40), then skipped."""
-    ordered = sorted(results, key=lambda r: (not r.passed, -_safe(r.rule40)))
+    """Survivors, then watchlist, then the rest (by Rule of 40), then skipped."""
+    ordered = sorted(results,
+                     key=lambda r: (not r.passed, not r.watchlist, -_safe(r.rule40)))
     rows = [_result_row(r) for r in ordered]
     rows += [_skipped_row(s.ticker, names.get(s.ticker, s.ticker), s.reason)
              for s in skipped]
