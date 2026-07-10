@@ -38,6 +38,23 @@ def test_msft_growth_is_evaluable(msft):
 
 
 def test_msft_ipo_date_is_sourced(msft):
-    # MSFT listed 1986-03-13; Yahoo's firstTradeDateEpochUtc must surface it.
+    # MSFT listed 1986-03-13; Yahoo's first-trade-date field must surface it
+    # (firstTradeDateMilliseconds as of yfinance ~2026).
     assert msft.ipo_date is not None
     assert msft.ipo_date.startswith("1986")
+
+
+def test_recent_listing_classifies_recent_ipo():
+    # SPCX listed 2026-06-12 -- inside the default 12-month seasoning window,
+    # so a live run must classify it RECENT_IPO, not screen it as a normal name.
+    from etf_screen.providers import DataUnavailable, YFinanceProvider
+    from etf_screen.screen import ScreenStatus, evaluate
+    try:
+        c = YFinanceProvider().fetch("SPCX")
+    except DataUnavailable as exc:
+        pytest.skip(f"SPCX fundamentals not sourceable live: {exc}")
+    assert c.ipo_date is not None and c.ipo_date.startswith("2026")
+    r = evaluate(c)
+    assert r.status in (ScreenStatus.RECENT_IPO, ScreenStatus.PRE_REVENUE)
+    if r.status is ScreenStatus.RECENT_IPO:
+        assert r.recent_ipo

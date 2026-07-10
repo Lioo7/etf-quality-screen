@@ -578,14 +578,23 @@ def _extract_price_history(closes, today: date):
 
 
 def _yf_first_trade_date(info: dict) -> str | None:
-    """ISO first-trading date from Yahoo's epoch field, or None (never guessed)."""
-    ts = info.get("firstTradeDateEpochUtc")
-    if not ts:
-        return None
+    """ISO first-trading date from Yahoo's epoch field, or None (never guessed).
+
+    yfinance has shipped this under two names with two units: the older
+    ``firstTradeDateEpochUtc`` (epoch seconds) and, as of ~2026,
+    ``firstTradeDateMilliseconds``. Each is converted per its documented unit —
+    the unit is never guessed from the value's magnitude.
+    """
     try:
+        ts = info.get("firstTradeDateEpochUtc")
+        if not ts:
+            ms = info.get("firstTradeDateMilliseconds")
+            ts = float(ms) / 1000.0 if ms else None
+        if not ts:
+            return None
         from datetime import datetime, timezone
         return datetime.fromtimestamp(float(ts), tz=timezone.utc).date().isoformat()
-    except (ValueError, OverflowError, OSError):
+    except (ValueError, TypeError, OverflowError, OSError):
         return None
 
 
