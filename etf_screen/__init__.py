@@ -4,4 +4,4 @@ Screening logic (``screen``) is kept strictly separate from data sourcing
 (``providers``, ``constituents``). The CLI lives in ``cli``.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.2.1"

@@ -118,10 +118,24 @@ equal `0.5 × growth%` (and, where PEG was the blocker, the price at which PEG
 = 2.0), computed on the same share count and revenue base as the P/S itself.
 The buy trigger is computed on a calm day so a future dip doesn't have to be
 re-judged under FOMO. Boundaries: a name failing quality **and** valuation
-stays plain rejected; a profitable name whose PEG is N/A stays rejected (no
-price fixes missing estimates, and Track B stays barred); zero/negative growth
-→ unlock `N/A` (a cheap price can't fix a shrinking company — it must
-re-qualify on quality first). `WATCHLIST` names are never in the shortlist.
+stays plain rejected; zero/negative growth → unlock `N/A` (a cheap price can't
+fix a shrinking company — it must re-qualify on quality first). `WATCHLIST`
+names are never in the shortlist.
+
+**Needs data — "PEG untestable" is not "PEG failed".** A profitable name must
+clear PEG on Track A, but some names simply carry no forward estimates —
+unsponsored ADRs are the classic case (Keyence/KYCCF in the live Japan run).
+Rejecting them would conflate a failed test with an unadministrable one, and
+no price movement can fix missing estimates. So a name whose **only** blocker
+is an uncomputable PEG — profitable, and every *testable* gate passing (P/S
+included, plus the same balance-sheet / earnings-quality / consistency gates a
+`WATCHLIST` candidate must clear) — is classified `NEEDS_DATA`: its own report
+and export section, never in the shortlist, with the pointer that verified
+`forward_pe` / `forward_eps_growth` values in `overrides.json` complete the
+screen. Boundaries: a *computable* failed PEG keeps its normal fate
+(`WATCHLIST`/`REJECTED`); a name that also fails P/S or any quality gate stays
+plain rejected — more estimate data could not have saved it; Track B is
+untouched (PEG is structurally N/A there).
 
 **IPO seasoning.** A name listed within the last 12 months
 (`--ipo-seasoning-months`, `0` disables) is set aside as `RECENT_IPO` — never
@@ -316,7 +330,7 @@ This run of the full mock universe produces every one of them:
 
 ```bash
 python -m etf_screen.cli --provider mock \
-    --tickers MSFT,GOOGL,CRWD,DURABLE,MOAT,LEAKY,FRESH,DECEL,NEWLY,BURN,ROLLUP,LEVERED
+    --tickers MSFT,GOOGL,CRWD,DURABLE,MOAT,LEAKY,FRESH,OPAQUE,DECEL,NEWLY,BURN,ROLLUP,LEVERED
 ```
 
 **A clean pass, fully annotated — MOAT.** Walk it through every layer:
@@ -368,6 +382,7 @@ RECENT_IPO (1) — listed within the last 12 months; ...
 | --- | --- | --- |
 | DURABLE, DECEL | PASS (Track A) | DECEL's dip year (33.6) is forgiven by `trend`; it fails under `--consistency-mode strict` |
 | CRWD | PASS (Track B) | PEG genuinely N/A; also tagged **HOT** (+58% in 3 mo, 5% off ATH) — a patience flag, not a rejection |
+| OPAQUE | NEEDS_DATA | every testable gate passes but PEG has no estimates to test — supply `forward_pe` via `overrides.json` |
 | GOOGL | REJECTED | Rule of 40 = 33.0 — a quality fail, so no watchlist candidacy |
 | LEAKY | REJECTED | earnings quality: 3-yr AdjFCF/NI = 0.67 < 0.8 — profits not becoming cash |
 | ROLLUP / LEVERED | REJECTED | goodwill 60% of assets / Net Debt 3.7× FCF — balance-sheet gates |
@@ -399,8 +414,14 @@ Backed by Yahoo Finance. **Known limitations — handled honestly, never papered
 over:**
 
 - **One accounting basis per company.** When Yahoo exposes a full trailing
-  twelve months of *both* income and cash-flow quarters, every metric is computed
-  on a true TTM basis. Otherwise the whole company falls back to an **annual**
+  twelve months of *both* income and cash-flow quarters, every level metric
+  (revenue, OCF/capex/SBC, net income) is a true TTM sum of the newest four.
+  Yahoo caps quarterly statements at ~5 columns (observed 2026-07), so the
+  *prior-year* TTM — quarters 5–8 — is usually unpublished; **growth** then
+  comes from the newest quarter vs its date-aligned year-ago counterpart
+  (both raw sourced lines, flagged `growth from latest-quarter YoY`), and the
+  true 8-quarter prior-TTM sum is used whenever Yahoo does provide it. A name
+  without even an aligned quarter pair falls back to the honest **annual**
   basis — revenue *and* OCF/capex/SBC all from the latest fiscal year — so
   growth, FCF margin, SBC%, and Rule of 40 share one base. The basis used is
   shown on each name and flagged `low-confidence` when annual.
@@ -564,7 +585,8 @@ consult a qualified professional before any financial decision.
 ## Development
 
 ```bash
-pytest -q          # 160 tests: acceptance fixtures, edge cases, data layer,
+pytest -q          # 184 tests (4 live-network, skipped unless RUN_LIVE_TESTS=1):
+                   # acceptance fixtures, edge cases, data layer,
                    # basis consistency, SBC-assumed-0, overrides, export,
                    # sector context (incl. the verdicts-unchanged regression),
                    # the issuer-holdings-CSV loader, the multi-year consistency
