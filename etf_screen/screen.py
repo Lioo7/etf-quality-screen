@@ -128,7 +128,11 @@ class Company:
 
     ticker: str
     revenue_ttm: float          # trailing-twelve-month revenue
-    revenue_ttm_prior: float    # the TTM revenue one year earlier
+    # The TTM revenue one year earlier. NaN when the source cannot expose a
+    # summable prior-year TTM (Yahoo caps quarterly statements at ~5 columns,
+    # so quarters 5-8 are unpublished) — growth then derives from the
+    # quarterly YoY pair below, and is NOT_EVALUABLE if that is absent too.
+    revenue_ttm_prior: float
     ocf_ttm: float              # operating cash flow, TTM
     capex_ttm: float            # capital expenditure, TTM (positive magnitude)
     sbc_ttm: float              # stock-based compensation, TTM
@@ -159,6 +163,12 @@ class Company:
     overridden_fields: list[str] = field(default_factory=list)  # from overrides.json
     sector: str = "Unknown"     # GICS-style sector bucket from the data layer
     industry: str = ""          # finer sub-sector (optional)
+    # Same-fiscal-quarter revenue pair (RAW statement lines, both sourced —
+    # never an estimated split of a yearly figure) for the growth derivation
+    # when revenue_ttm_prior is not summable from the source. None = the pair
+    # was not sourced; growth falls back to the TTM pair.
+    revenue_latest_q: float | None = None    # newest quarter's revenue
+    revenue_year_ago_q: float | None = None  # same fiscal quarter, 1 yr earlier
     # First trading date, ISO "YYYY-MM-DD". None = unknown (never guessed): the
     # name is screened normally and flagged ipo_date_unknown, NOT classified.
     ipo_date: str | None = None
@@ -345,14 +355,22 @@ class Result:
 
 def _period_metrics(
     revenue: float, revenue_prior: float, ocf: float, capex: float, sbc: float,
+    growth_pair: tuple[float, float] | None = None,
 ) -> tuple[float, float, float, float]:
     """Return ``(growth, adj_fcf, adj_margin, rule40)`` for one period.
 
     The single source of truth for the per-period math, shared by the live
     snapshot in :func:`evaluate` and the historical years in the consistency
     gate so there is zero methodology drift between them.
+
+    ``growth_pair`` (``(now, year_ago)``) substitutes a same-fiscal-quarter YoY
+    revenue pair into the growth term only — the level ratios (margin, and the
+    Rule-of-40 margin component) stay on the shared ``revenue`` base. It exists
+    for sources that publish too few quarters to sum a true prior-year TTM
+    (see ``Company.revenue_ttm_prior``); historical years never pass it.
     """
-    growth = pct(revenue - revenue_prior, revenue_prior)
+    growth_now, growth_base = growth_pair if growth_pair else (revenue, revenue_prior)
+    growth = pct(growth_now - growth_base, growth_base)
     adj_fcf = ocf - capex - sbc
     adj_margin = pct(adj_fcf, revenue)
     rule40 = growth + adj_margin
@@ -386,9 +404,17 @@ def evaluate(c: Company, consistency_years: int = 0,
     if c.revenue_ttm <= 0:
         return _pre_revenue_result(c)
 
-    # 2. Snapshot metrics + balance-sheet derived metrics.
+    # 2. Snapshot metrics + balance-sheet derived metrics. Growth prefers the
+    # sourced quarterly YoY pair when the provider could not sum a true prior
+    # TTM (a non-positive year-ago quarter falls back to the TTM pair, which
+    # is NaN in that case -> NOT_EVALUABLE, the honest divide-by-zero verdict).
+    growth_pair = None
+    if (c.revenue_latest_q is not None and c.revenue_year_ago_q is not None
+            and c.revenue_year_ago_q > 0):
+        growth_pair = (c.revenue_latest_q, c.revenue_year_ago_q)
     growth, adj_fcf, adj_margin, rule40 = _period_metrics(
-        c.revenue_ttm, c.revenue_ttm_prior, c.ocf_ttm, c.capex_ttm, c.sbc_ttm
+        c.revenue_ttm, c.revenue_ttm_prior, c.ocf_ttm, c.capex_ttm, c.sbc_ttm,
+        growth_pair=growth_pair,
     )
     fcf = c.ocf_ttm - c.capex_ttm
     p_s = c.market_cap / c.revenue_ttm if c.revenue_ttm else nan

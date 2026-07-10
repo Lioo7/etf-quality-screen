@@ -28,7 +28,8 @@ from .screen import AnnualPeriod, Company
 
 # Fields persisted to / restored from the disk cache.
 _COMPANY_FIELDS = (
-    "ticker", "revenue_ttm", "revenue_ttm_prior", "ocf_ttm", "capex_ttm",
+    "ticker", "revenue_ttm", "revenue_ttm_prior",
+    "revenue_latest_q", "revenue_year_ago_q", "ocf_ttm", "capex_ttm",
     "sbc_ttm", "diluted_shares_now", "diluted_shares_prior", "market_cap",
     "forward_pe", "forward_eps_growth", "net_income_ttm",
     "total_debt", "cash_and_equivalents", "goodwill", "total_assets",
@@ -387,12 +388,30 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     shares_q = _row(q_inc, _SHARES)
     ocf_q = _row(q_cf, _OCF)
 
-    # TTM requires a full trailing year of BOTH income and cash flow.
-    ttm_ok = len(rev_q) >= 8 and len(shares_q) >= 5 and len(ocf_q) >= 4
+    # TTM requires a full trailing year of BOTH income and cash flow. Yahoo has
+    # capped quarterly statements at ~5 columns (observed 2026-07: MSFT/AAPL/NVDA
+    # all expose exactly 5 income quarters), so the prior-year TTM (quarters
+    # 5-8) is usually unpublished. Growth then comes from the newest quarter vs
+    # its date-aligned year-ago counterpart — both raw sourced lines, never an
+    # estimate. The 8-quarter true-prior-TTM path is kept for when it exists.
+    full_prior = len(rev_q) >= 8
+    rev_latest_q, rev_year_ago_q = _yoy_quarter_pair(_labeled_row(q_inc, _REV))
+    yoy_growth_ok = rev_latest_q is not None and rev_year_ago_q > 0
+    ttm_ok = (len(rev_q) >= 4 and len(shares_q) >= 5 and len(ocf_q) >= 4
+              and (full_prior or yoy_growth_ok))
 
     if ttm_ok:
         basis = "TTM"
-        revenue_ttm, revenue_prior = sum(rev_q[:4]), sum(rev_q[4:8])
+        revenue_ttm = sum(rev_q[:4])
+        if full_prior:
+            revenue_prior = sum(rev_q[4:8])
+            rev_latest_q = rev_year_ago_q = None  # true TTM pair wins
+        else:
+            revenue_prior = float("nan")  # not summable -> quarterly YoY pair
+            low_conf.append(
+                "growth from latest-quarter YoY (source exposes <8 quarters; "
+                "prior-year TTM not summable)"
+            )
         shares_now, shares_prior = shares_q[0], shares_q[4]
         cf = q_cf
 
@@ -400,6 +419,7 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
             vals = _row(cf, labels)
             return (sum(vals[:4]), True) if len(vals) >= 4 else (None, False)
     else:
+        rev_latest_q = rev_year_ago_q = None  # annual basis: TTM pair only
         basis = "annual"
         rev_a = _row(a_inc, _REV)
         shares_a = _row(a_inc, _SHARES)
@@ -514,6 +534,7 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
 
     return Company(
         ticker=ticker, revenue_ttm=revenue_ttm, revenue_ttm_prior=revenue_prior,
+        revenue_latest_q=rev_latest_q, revenue_year_ago_q=rev_year_ago_q,
         ocf_ttm=ocf, capex_ttm=capex, sbc_ttm=sbc,
         diluted_shares_now=shares_now, diluted_shares_prior=shares_prior,
         market_cap=float(market_cap),
@@ -566,6 +587,29 @@ def _yf_first_trade_date(info: dict) -> str | None:
         return datetime.fromtimestamp(float(ts), tz=timezone.utc).date().isoformat()
     except (ValueError, OverflowError, OSError):
         return None
+
+
+def _yoy_quarter_pair(rev_by_col: dict) -> tuple[float | None, float | None]:
+    """``(latest_q, year_ago_q)`` revenue when a same-fiscal-quarter pair exists.
+
+    The year-ago counterpart must sit 350-380 days before the newest column so
+    a fiscal-calendar shift or a missing middle quarter can never silently pair
+    mismatched quarters (comparing different fiscal quarters would re-introduce
+    seasonality into growth). ``(None, None)`` when no aligned pair exists or
+    the columns are not dated.
+    """
+    if not rev_by_col:
+        return None, None
+    cols = sorted(rev_by_col, reverse=True)
+    newest = cols[0]
+    for col in cols[1:]:
+        try:
+            delta_days = (newest - col).days
+        except TypeError:  # string-labeled columns -> can't verify alignment
+            return None, None
+        if 350 <= delta_days <= 380:
+            return float(rev_by_col[newest]), float(rev_by_col[col])
+    return None, None
 
 
 def _bal_amount(bal, labels):
