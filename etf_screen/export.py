@@ -143,9 +143,10 @@ def _skipped_row(ticker: str, name: str, reason: str) -> dict:
 
 
 def build_rows(results: list[Result], skipped, names: dict[str, str]) -> list[dict]:
-    """Survivors, then watchlist, then the rest (by Rule of 40), then skipped."""
+    """Survivors, watchlist, needs-data, then the rest (by Rule of 40), then skipped."""
     ordered = sorted(results,
-                     key=lambda r: (not r.passed, not r.watchlist, -_safe(r.rule40)))
+                     key=lambda r: (not r.passed, not r.watchlist, not r.needs_data,
+                                    -_safe(r.rule40)))
     rows = [_result_row(r) for r in ordered]
     rows += [_skipped_row(s.ticker, names.get(s.ticker, s.ticker), s.reason)
              for s in skipped]

@@ -194,9 +194,9 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
     insufficient = [r for r in results if r.insufficient_history]
     recent_ipos = [r for r in results if r.recent_ipo]
     watchlist = [r for r in results if r.watchlist]
-    rejected = [r for r in results if not r.passed and not r.insufficient_history
-                and not r.recent_ipo and not r.watchlist
-                and r.status is not ScreenStatus.PRE_REVENUE]
+    needs_data = [r for r in results if r.needs_data]
+    rejected = [r for r in results if r.status is ScreenStatus.REJECTED
+                or r.status is ScreenStatus.NOT_EVALUABLE]
     sbc_assumed = [r for r in results if r.sbc_assumed_zero]
     bs_assumed = [r for r in results
                   if r.company.goodwill_assumed_zero or r.company.debt_assumed_zero]
@@ -220,6 +220,8 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
     print(f"  could not source: {len(skipped)}")
     print(f"  passed          : {len(survivors)}")
     print(f"  watchlist       : {len(watchlist)} (quality passed, valuation failed)")
+    if needs_data:
+        print(f"  needs data      : {len(needs_data)} (PEG untestable — see section)")
     print(f"  rejected        : {len(rejected)}")
     if pre_revenue:
         print(f"  pre-revenue     : {len(pre_revenue)} (firewall — no metric math)")
@@ -287,6 +289,17 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
         for r in watchlist:
             print(f"  {r.ticker} ({_short(r.name)}): {'; '.join(r.reasons)}"
                   f" -> {_unlocks(r)}{_flags(r)}")
+
+    # --- needs data: every testable gate passed, PEG had no estimates to test ---
+    if needs_data:
+        print(f"\nNEEDS_DATA ({len(needs_data)}) — every testable gate passed but PEG "
+              f"had no forward estimates to test (common for unsponsored ADRs). Not "
+              f"in the shortlist; verify estimates yourself and supply forward_pe / "
+              f"forward_eps_growth in overrides.json to complete the screen:")
+        for r in needs_data:
+            print(f"  {r.ticker} ({_short(r.name)}): Rule40 {_f(r.rule40)}, "
+                  f"P/S {_f(r.p_s, 1)} vs guardrail {_f(r.ps_guardrail, 1)}, "
+                  f"SBC {_f(r.sbc_pct)}%{_flags(r)}")
 
     if rejected:
         print("\nWhy names were rejected:")

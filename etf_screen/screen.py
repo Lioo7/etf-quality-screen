@@ -88,6 +88,7 @@ class ScreenStatus(Enum):
     NOT_EVALUABLE = auto()         # a divide-by-zero guard tripped (missing/zero denominator)
     RECENT_IPO = auto()            # listed within the seasoning window — never in the shortlist
     WATCHLIST = auto()             # every quality gate passed; ONLY valuation blocked the pass
+    NEEDS_DATA = auto()            # every testable gate passed; PEG was UNTESTABLE (no estimates)
 
 
 @dataclass
@@ -314,6 +315,13 @@ class Result:
         return self.status is ScreenStatus.WATCHLIST
 
     @property
+    def needs_data(self) -> bool:
+        """Every testable gate passed but PEG could not be administered (no
+        forward estimates) — a failed test rejects, an unadministrable one
+        asks for data. overrides.json can supply forward_pe / forward_eps_growth."""
+        return self.status is ScreenStatus.NEEDS_DATA
+
+    @property
     def ipo_date_unknown(self) -> bool:
         """The source exposed no first-trading date — screened normally, flagged."""
         return self.company.ipo_date is None
@@ -386,7 +394,9 @@ def evaluate(c: Company, consistency_years: int = 0,
     Order of operations: a **pre-revenue firewall** fires first (no metric math
     on a name with no revenue); then the snapshot four-filter / two-track routing
     (UNCHANGED); then — only for a snapshot qualifier — the current-snapshot
-    balance-sheet gates and the multi-year consistency gate. Finally, a name
+    balance-sheet gates and the multi-year consistency gate. A snapshot failer
+    whose only blockers were valuation (WATCHLIST) or an untestable PEG
+    (NEEDS_DATA) gets the same gates run on its would-be track. Finally, a name
     whose first trading date falls inside the last ``ipo_seasoning_months`` is
     reclassified ``RECENT_IPO`` regardless of the underlying verdict — recent
     IPOs structurally break the history-based inputs and carry hostile base
@@ -540,20 +550,38 @@ def evaluate(c: Company, consistency_years: int = 0,
         # are moot, so their outcomes are not attached or reported). A
         # profitable name whose PEG is N/A is NOT a candidate: no price fixes
         # missing forward estimates, and Track B stays barred.
+        #
+        # NEEDS_DATA candidacy: the disjoint sibling case — a profitable name
+        # whose ONLY blocker is an UNTESTABLE PEG (no forward estimates, e.g.
+        # an unsponsored ADR) while every testable gate passes, P/S included.
+        # A failed test rejects; an unadministrable one asks for data — the
+        # user can supply forward_pe / forward_eps_growth via overrides.json.
+        # Track B stays barred either way (never in the shortlist), and a name
+        # that ALSO fails P/S or any quality gate stays plain REJECTED: more
+        # estimate data could not have saved it.
         eligible = (quality_a and peg is not None) or quality_b
-        if eligible:
+        needs_data_eligible = quality_a and peg is None and pass_ps
+        if eligible or needs_data_eligible:
             wl_bs_reasons, wl_consistency = _run_quality_gates(quality_a)
             if not wl_bs_reasons and (
                 wl_consistency is None
                 or wl_consistency.status is ConsistencyStatus.PASS
             ):
-                status = ScreenStatus.WATCHLIST
                 consistency = wl_consistency
                 roic_hist = roic_history(c.history)
                 margin_prof = margin_profile(c.history)
-                unlock_ps_price, unlock_peg_price = _unlock_prices(
-                    c, growth, p_s, peg, quality_a, pass_ps, pass_peg,
-                )
+                if needs_data_eligible:
+                    status = ScreenStatus.NEEDS_DATA
+                    reasons = [
+                        "PEG untestable: no forward estimates — supply "
+                        "forward_pe / forward_eps_growth in overrides.json "
+                        "to complete the screen"
+                    ]
+                else:
+                    status = ScreenStatus.WATCHLIST
+                    unlock_ps_price, unlock_peg_price = _unlock_prices(
+                        c, growth, p_s, peg, quality_a, pass_ps, pass_peg,
+                    )
     else:
         # A snapshot track cleared — layer the balance-sheet and consistency gates.
         track = "Track A" if track_a else "Track B"

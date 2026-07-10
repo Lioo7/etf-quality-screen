@@ -210,6 +210,21 @@ class MockProvider(DataProvider):
                              AnnualPeriod("2023", 845, 340, 40, 40, net_income=400),
                              AnnualPeriod("2024", 1100, 440, 50, 50, net_income=400),
                          ]),
+        # The Keyence archetype: profitable, every testable filter passes, but no
+        # forward estimates exist (unsponsored ADR) -> PEG is UNTESTABLE, not
+        # failed -> NEEDS_DATA with the overrides.json hint (v0.2.1 Fix 3).
+        "OPAQUE": Company("OPAQUE", 1000, 700, 400, 50, 50, 1000, 1000,
+                          5000, None, 0.0, 200,
+                          total_debt=0, cash_and_equivalents=300, goodwill=0,
+                          total_assets=1500, operating_income=200, total_equity=1000,
+                          name="Opaque ADR Co.", basis="TTM",
+                          sector="Industrials", industry="Specialty Machinery",
+                          history=[
+                              AnnualPeriod("2021", 500, 200, 25, 25),
+                              AnnualPeriod("2022", 650, 260, 30, 30),
+                              AnnualPeriod("2023", 845, 340, 40, 40),
+                              AnnualPeriod("2024", 1100, 440, 50, 50),
+                          ]),
         # Passes snapshot Track A but a windowed year decelerates < 40 (strict FAIL).
         "DECEL": Company("DECEL", 1000, 700, 400, 50, 50, 1000, 1000,
                          5000, 30.0, 20.0, 200,
