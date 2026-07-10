@@ -495,6 +495,32 @@ def evaluate(c: Company, consistency_years: int = 0,
     unlock_ps_price: float | None = None
     unlock_peg_price: float | None = None
 
+    def _run_quality_gates(track_a_like: bool):
+        """``(bs_reasons, consistency)`` for a real or hypothetical track.
+
+        The ONE place the snapshot-qualifier gate set (leverage, goodwill,
+        ROIC-when-applicable, earnings quality, and the multi-year consistency
+        gate) is assembled. The real qualifier path and the hypothetical
+        WATCHLIST candidacy both call it, so a future gate cannot be added to
+        one path and silently forgotten in the other. ``track_a_like`` picks
+        the Track-A rules (strict-mode ROIC gating, Track-A consistency) vs
+        Track B's; a closure so the gate inputs can't drift between callers.
+        """
+        gate_roic_applied = track_a_like and consistency_mode == "strict"
+        bs = _balance_sheet_reasons(
+            pass_leverage, pass_goodwill, gate_roic_applied, pass_roic,
+            net_debt, fcf, net_debt_to_fcf, goodwill_to_assets, roic,
+            eq_applicable, pass_earnings_quality, eq_ratio, eq_years,
+        )
+        hist = None
+        if consistency_years > 0:
+            hist = (
+                track_a_consistency(c.history, consistency_years, consistency_mode)
+                if track_a_like
+                else track_b_consistency(c.history, consistency_years)
+            )
+        return bs, hist
+
     if not evaluable:
         status = ScreenStatus.NOT_EVALUABLE
         track = "—"
@@ -516,18 +542,7 @@ def evaluate(c: Company, consistency_years: int = 0,
         # missing forward estimates, and Track B stays barred.
         eligible = (quality_a and peg is not None) or quality_b
         if eligible:
-            wl_roic_applied = quality_a and consistency_mode == "strict"
-            wl_bs_reasons = _balance_sheet_reasons(
-                pass_leverage, pass_goodwill, wl_roic_applied, pass_roic,
-                net_debt, fcf, net_debt_to_fcf, goodwill_to_assets, roic,
-                eq_applicable, pass_earnings_quality, eq_ratio, eq_years,
-            )
-            wl_consistency = None
-            if consistency_years > 0:
-                wl_consistency = (
-                    track_a_consistency(c.history, consistency_years, consistency_mode)
-                    if quality_a else track_b_consistency(c.history, consistency_years)
-                )
+            wl_bs_reasons, wl_consistency = _run_quality_gates(quality_a)
             if not wl_bs_reasons and (
                 wl_consistency is None
                 or wl_consistency.status is ConsistencyStatus.PASS
@@ -544,16 +559,7 @@ def evaluate(c: Company, consistency_years: int = 0,
         track = "Track A" if track_a else "Track B"
         roic_hist = roic_history(c.history)
         margin_prof = margin_profile(c.history)
-        bs_reasons = _balance_sheet_reasons(
-            pass_leverage, pass_goodwill, roic_applied, pass_roic,
-            net_debt, fcf, net_debt_to_fcf, goodwill_to_assets, roic,
-            eq_applicable, pass_earnings_quality, eq_ratio, eq_years,
-        )
-        if consistency_years > 0:
-            consistency = (
-                track_a_consistency(c.history, consistency_years, consistency_mode)
-                if track_a else track_b_consistency(c.history, consistency_years)
-            )
+        bs_reasons, consistency = _run_quality_gates(track_a)
 
         # Status precedence: a balance-sheet failure is definitive and wins over
         # the historical gate; otherwise insufficiency, then a consistency fail.
