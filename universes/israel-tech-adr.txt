@@ -11,14 +11,18 @@
 # Format: one ticker per line; '#' starts a comment (full-line or trailing).
 
 CHKP    # Check Point — cybersecurity, the original Israeli compounder
-CYBR    # CyberArk — privileged access management
+# CYBR  # CyberArk — REMOVED 2026-07-10: acquired by Palo Alto Networks and
+#         delisted; Yahoo no longer serves the symbol at all. Revisit only if
+#         a corporate action ever relists it.
 NICE    # NICE — CX / financial-crime software
 MNDY    # monday.com — work management SaaS
 WIX     # Wix — website platform
 GLBE    # Global-e — cross-border e-commerce enablement
 FVRR    # Fiverr — freelance marketplace
 SEDG    # SolarEdge — solar inverters (cyclical; expect screen rejections)
-TSEM    # Tower Semiconductor — specialty foundry
+TSEM    # Tower Semiconductor — specialty foundry (failed to source in the
+        # 2026-07-09 run but probed clean on 2026-07-10: a transient Yahoo
+        # miss, not a corporate action — kept)
 CAMT    # Camtek — semiconductor inspection
 NVMI    # Nova — semiconductor metrology
 KRNT    # Kornit Digital — digital textile printing

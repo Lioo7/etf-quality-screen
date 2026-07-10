@@ -153,6 +153,14 @@ over ≥ 5 usable years earns the `roic_durable` tag — evidence of a moat wide
 enough to survive one bad year, not a rounding error. This is purely
 informational: it never changes `passed`, `track`, or ranking.
 
+One honest blind spot, by construction: companies with **negative or near-zero
+equity** (usually from aggressive buybacks — BKNG is the canonical example)
+have non-positive or tiny invested capital, so their ROIC renders `N/A` or an
+unstable, meaninglessly huge median. That is the metric being truthful about
+its own denominator, not a bug: ROIC measures returns on the capital actually
+employed, and a balance sheet that has bought back its equity base has removed
+the denominator. Read such names on the other quality evidence instead.
+
 **Entry timing (informational).** The screen answers "what is worth owning" —
 deliberately not "when to buy". But the downstream workflow applies an
 anti-FOMO entry rule, so each name carries two timing columns from

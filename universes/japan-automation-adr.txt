@@ -21,5 +21,8 @@ KYCCF   # Keyence — machine vision / sensors (OTC F-share)
 SMCAY   # SMC Corp — pneumatic components
 HTHIY   # Hitachi — conglomerate with a large automation arm
 MIELY   # Mitsubishi Electric — factory automation systems
-DAIUF   # Daifuku — material-handling / warehouse automation
-HRLBF   # Harmonic Drive — strain-wave robot gears
+DFKCY   # Daifuku — material-handling / warehouse automation (swapped in for
+        # the DAIUF F-share 2026-07-10: prefer the sponsored ADR; same issuer,
+        # quarterly data still thin)
+HSYDF   # Harmonic Drive Systems — strain-wave robot gears (replaced HRLBF
+        # 2026-07-10: Yahoo no longer serves that symbol at all)
