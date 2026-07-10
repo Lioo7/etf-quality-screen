@@ -30,7 +30,7 @@ def test_high_quality_passes():
         _period("2023", 845, 340, 40, 40, net_income=100),
         _period("2024", 1100, 440, 50, 50, net_income=100),
     ]
-    applicable, ratio, years, passed = _earnings_quality(history)
+    applicable, ratio, years, passed, capex_pct = _earnings_quality(history)
     # cum adj FCF = 200+260+340=800, cum NI = 300 -> ratio > 0.8 (>1 even)
     assert applicable and passed
     assert years == 3
@@ -43,7 +43,7 @@ def test_low_quality_fails():
         _period("2023", 845, 340, 40, 40, net_income=400),
         _period("2024", 1100, 440, 50, 50, net_income=400),
     ]
-    applicable, ratio, years, passed = _earnings_quality(history)
+    applicable, ratio, years, passed, capex_pct = _earnings_quality(history)
     assert applicable and not passed
     assert ratio == pytest.approx(800 / 1200)
 
@@ -54,14 +54,14 @@ def test_cumulative_ni_non_positive_is_na():
         _period("2023", 845, 340, 40, 40, net_income=20),
         _period("2024", 1100, 440, 50, 50, net_income=10),
     ]
-    applicable, ratio, years, passed = _earnings_quality(history)
+    applicable, ratio, years, passed, capex_pct = _earnings_quality(history)
     assert not applicable and passed  # N/A, never a fail
     assert ratio is None
 
 
 def test_no_net_income_data_is_na():
     history = [_period("2024", 1100, 440, 50, 50, net_income=None)]
-    applicable, ratio, years, passed = _earnings_quality(history)
+    applicable, ratio, years, passed, capex_pct = _earnings_quality(history)
     assert not applicable and passed and years == 0
 
 
@@ -70,7 +70,7 @@ def test_shorter_basis_when_only_two_years_available():
         _period("2023", 845, 340, 40, 40, net_income=100),
         _period("2024", 1100, 440, 50, 50, net_income=100),
     ]
-    applicable, ratio, years, passed = _earnings_quality(history)
+    applicable, ratio, years, passed, capex_pct = _earnings_quality(history)
     assert applicable and years == 2
     assert ratio == pytest.approx((260 + 340) / 200)
 
@@ -82,7 +82,7 @@ def test_window_caps_at_three_years_even_with_more_history():
         _period("2023", 845, 340, 40, 40, net_income=100),
         _period("2024", 1100, 440, 50, 50, net_income=100),
     ]
-    applicable, ratio, years, passed = _earnings_quality(history)
+    applicable, ratio, years, passed, capex_pct = _earnings_quality(history)
     assert years == 3   # 2021 (outside the trailing 3-yr window) is ignored
 
 
@@ -92,9 +92,68 @@ def test_middle_year_missing_net_income_is_skipped_not_fabricated():
         _period("2023", 845, 340, 40, 40, net_income=None),  # gap
         _period("2024", 1100, 440, 50, 50, net_income=100),
     ]
-    applicable, ratio, years, passed = _earnings_quality(history)
+    applicable, ratio, years, passed, capex_pct = _earnings_quality(history)
     assert years == 2   # only the two years WITH a net-income figure are used
     assert ratio == pytest.approx((200 + 340) / 200)
+
+
+# --- capex-intensity annotation (v0.2.1 Fix 4; informational, never a gate) ---
+def test_capex_intense_eq_failure_carries_the_reinvestment_note():
+    # The NVDA/TSM live-fire case: EQ fails arithmetically, but capex over the
+    # same window is ~20% of revenue -> the shortfall may be reinvestment, not
+    # accrual rot. The gate STILL fails; the note flags the ambiguity.
+    history = [
+        _period("2022", 650, 260, 130, 30, net_income=400),
+        _period("2023", 845, 340, 170, 40, net_income=400),
+        _period("2024", 1100, 440, 220, 50, net_income=400),
+    ]
+    applicable, ratio, years, passed, capex_pct = _earnings_quality(history)
+    assert applicable and not passed
+    assert capex_pct == pytest.approx((130 + 170 + 220) / (650 + 845 + 1100) * 100)
+    r = evaluate(_track_a(history))
+    assert r.status is ScreenStatus.REJECTED           # threshold unchanged
+    assert r.eq_capex_intensity == pytest.approx(capex_pct)
+    assert any("capex intensity" in reason for reason in r.reasons)
+
+
+def test_low_capex_eq_failure_has_no_reinvestment_note():
+    # Same failing ratio but capex ~4% of revenue: the shortfall reads as
+    # accruals, so no softening note is attached.
+    history = [
+        _period("2022", 650, 260, 30, 30, net_income=400),
+        _period("2023", 845, 340, 40, 40, net_income=400),
+        _period("2024", 1100, 440, 50, 50, net_income=400),
+    ]
+    r = evaluate(_track_a(history))
+    assert r.status is ScreenStatus.REJECTED
+    assert not any("capex intensity" in reason for reason in r.reasons)
+
+
+def test_capex_intensity_never_rescues_or_rejects():
+    # A PASSING name with intense capex keeps its verdict and gets no note in
+    # reasons -- the field is informational and only disambiguates a failure.
+    history = [
+        _period("2022", 650, 460, 130, 30, net_income=100),
+        _period("2023", 845, 570, 170, 40, net_income=100),
+        _period("2024", 1100, 740, 220, 50, net_income=100),
+    ]
+    r = evaluate(_track_a(history))
+    assert r.passed and r.pass_earnings_quality
+    assert r.eq_capex_intensity is not None and r.eq_capex_intensity > 15
+    assert r.reasons == []
+
+
+def test_capex_intensity_populated_even_when_eq_is_na():
+    # Informational field: computable from revenue/capex even when the gate is
+    # N/A (cumulative NI <= 0) -- the window still describes the business.
+    history = [
+        _period("2022", 650, 260, 130, 30, net_income=-50),
+        _period("2023", 845, 340, 170, 40, net_income=-20),
+        _period("2024", 1100, 440, 220, 50, net_income=-10),
+    ]
+    applicable, ratio, years, passed, capex_pct = _earnings_quality(history)
+    assert not applicable and passed
+    assert capex_pct == pytest.approx((130 + 170 + 220) / (650 + 845 + 1100) * 100)
 
 
 # --- integration with evaluate() --------------------------------------------

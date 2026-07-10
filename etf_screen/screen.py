@@ -45,6 +45,11 @@ ROIC_HISTORY_MIN_YEARS = 3  # below this, the median is flagged as noisy/thin
 # --- earnings quality (rejecting; balance-sheet-gate family) ----------------
 EARNINGS_QUALITY_WINDOW = 3    # cumulative window, years
 EARNINGS_QUALITY_MIN = 0.8     # cumulative adjusted FCF / cumulative net income floor
+# Capex/revenue over the SAME window above which a failed EQ gate carries the
+# "may be reinvestment, not accruals" annotation (NVDA/TSM-style growth capex).
+# Informational only: the gate's arithmetic cannot tell rot from reinvestment,
+# so the threshold never changes — the annotation flags the ambiguity instead.
+EQ_CAPEX_INTENSITY_NOTE_MIN = 15.0
 
 # --- gross-margin level & stability (advisory; pricing-power proxy) --------
 PRICING_POWER_GM_MIN = 40.0       # gross margin % floor
@@ -254,6 +259,11 @@ class Result:
     earnings_quality_applicable: bool   # False when cumulative NI <= 0 or no usable years
     earnings_quality_ratio: float | None
     earnings_quality_years: int         # actual window used (< EARNINGS_QUALITY_WINDOW if thin)
+    # Cumulative capex as % of cumulative revenue over the SAME window (None:
+    # no usable years). INFORMATIONAL disambiguator for a failed gate: above
+    # EQ_CAPEX_INTENSITY_NOTE_MIN the shortfall may be reinvestment (growth
+    # capex / working-capital build), not accrual rot — never flips the gate.
+    eq_capex_intensity: float | None
 
     # entry-timing annotations (INFORMATIONAL ONLY — the screen answers "what is
     # worth owning", not "when to buy"; these never touch verdicts or ranking)
@@ -493,7 +503,8 @@ def evaluate(c: Company, consistency_years: int = 0,
     # Earnings quality: cumulative adjusted-FCF / net-income over the trailing
     # window. N/A (never fails) when not applicable (unprofitable cumulatively,
     # or no net-income history); applies to any snapshot qualifier, either track.
-    eq_applicable, eq_ratio, eq_years, pass_earnings_quality = _earnings_quality(c.history)
+    (eq_applicable, eq_ratio, eq_years, pass_earnings_quality,
+     eq_capex_intensity) = _earnings_quality(c.history)
 
     # Entry timing (informational): % off ATH, 3-month return, and the HOT flag
     # for the downstream anti-FOMO entry rule. Never feeds a gate or the rank.
@@ -521,6 +532,7 @@ def evaluate(c: Company, consistency_years: int = 0,
             pass_leverage, pass_goodwill, gate_roic_applied, pass_roic,
             net_debt, fcf, net_debt_to_fcf, goodwill_to_assets, roic,
             eq_applicable, pass_earnings_quality, eq_ratio, eq_years,
+            eq_capex_intensity,
         )
         hist = None
         if consistency_years > 0:
@@ -641,6 +653,7 @@ def evaluate(c: Company, consistency_years: int = 0,
         pass_earnings_quality=pass_earnings_quality,
         earnings_quality_applicable=eq_applicable,
         earnings_quality_ratio=eq_ratio, earnings_quality_years=eq_years,
+        eq_capex_intensity=eq_capex_intensity,
         pct_off_ath=pct_off_ath, three_month_return=three_month_return, hot=hot,
         unlock_ps_price=unlock_ps_price, unlock_peg_price=unlock_peg_price,
         status=status, track_a=track_a, track_b=track_b,
@@ -745,6 +758,7 @@ def _pre_revenue_result(c: Company) -> Result:
         pass_roic=False, roic_applied=False,
         pass_earnings_quality=False, earnings_quality_applicable=False,
         earnings_quality_ratio=None, earnings_quality_years=0,
+        eq_capex_intensity=None,
         pct_off_ath=None, three_month_return=None, hot=False,
         unlock_ps_price=None, unlock_peg_price=None,
         status=ScreenStatus.PRE_REVENUE, track_a=False, track_b=False,
@@ -758,6 +772,7 @@ def _balance_sheet_reasons(
     goodwill_to_assets: float, roic: float | None,
     eq_applicable: bool = False, pass_earnings_quality: bool = True,
     eq_ratio: float | None = None, eq_years: int = 0,
+    eq_capex_intensity: float | None = None,
 ) -> list[str]:
     """All failing balance-sheet-gate reasons for a snapshot qualifier (no short-circuit).
 
@@ -785,10 +800,20 @@ def _balance_sheet_reasons(
     if roic_applied and roic is not None and not pass_roic:
         reasons.append(f"ROIC = {roic * 100:.1f}% (< {ROIC_MIN * 100:.0f}%)")
     if eq_applicable and not pass_earnings_quality:
-        reasons.append(
+        reason = (
             f"earnings quality: cumulative {eq_years}-yr AdjFCF/NI = {eq_ratio:.2f} "
             f"(< {EARNINGS_QUALITY_MIN:.1f})"
         )
+        # The ratio can't tell accrual rot from heavy reinvestment; when capex
+        # over the same window is intense, say so next to the rejection (the
+        # gate still fails — the annotation flags the ambiguity, never waives it).
+        if (eq_capex_intensity is not None
+                and eq_capex_intensity > EQ_CAPEX_INTENSITY_NOTE_MIN):
+            reason += (
+                f" — EQ shortfall may reflect capex intensity "
+                f"(capex {eq_capex_intensity:.0f}% of revenue), not accruals"
+            )
+        reasons.append(reason)
     return reasons
 
 
@@ -928,7 +953,9 @@ def margin_profile(history: list[AnnualPeriod]) -> MarginProfile:
 # ---------------------------------------------------------------------------
 # Earnings-quality gate (rejecting; balance-sheet-gate family) — pure, no IO
 # ---------------------------------------------------------------------------
-def _earnings_quality(history: list[AnnualPeriod]) -> tuple[bool, float | None, int, bool]:
+def _earnings_quality(
+    history: list[AnnualPeriod],
+) -> tuple[bool, float | None, int, bool, float | None]:
     """Cumulative adjusted-FCF / net-income ratio over the last
     :data:`EARNINGS_QUALITY_WINDOW` years — the classic accounting red flag for
     profits that never become cash (aggressive revenue recognition, ballooning
@@ -936,22 +963,33 @@ def _earnings_quality(history: list[AnnualPeriod]) -> tuple[bool, float | None, 
     swings, so this cumulates; :data:`EARNINGS_QUALITY_MIN` tolerates normal
     timing noise while catching persistent accrual inflation.
 
-    Returns ``(applicable, ratio, years_used, passed)``. **N/A, never a fail**,
-    when no year in the window has a net-income figure, or cumulative net income
-    is <= 0 (Track B's own FCF gate already covers unprofitable names). Uses
-    only the years that actually carry a net-income figure — never fabricated —
-    so ``years_used`` can be less than the configured window.
+    Returns ``(applicable, ratio, years_used, passed, capex_intensity)``.
+    **N/A, never a fail**, when no year in the window has a net-income figure,
+    or cumulative net income is <= 0 (Track B's own FCF gate already covers
+    unprofitable names). Uses only the years that actually carry a net-income
+    figure — never fabricated — so ``years_used`` can be less than the
+    configured window.
+
+    ``capex_intensity`` is cumulative capex as a % of cumulative revenue over
+    the SAME years — the disambiguator for a failed gate: the ratio arithmetic
+    cannot tell accrual rot (receivables ballooning) from heavy reinvestment
+    (growth capex, working-capital build), and above
+    :data:`EQ_CAPEX_INTENSITY_NOTE_MIN` the shortfall plausibly reads as the
+    latter. Informational only — it never flips ``passed``.
     """
     window = [p for p in history[-EARNINGS_QUALITY_WINDOW:] if p.net_income is not None]
     years_used = len(window)
     if years_used == 0:
-        return False, None, 0, True
+        return False, None, 0, True, None
+    capex_intensity = pct(sum(p.capex for p in window), sum(p.revenue for p in window))
+    if isnan(capex_intensity):
+        capex_intensity = None
     cum_ni = sum(p.net_income for p in window)
     if cum_ni <= 0:
-        return False, None, years_used, True
+        return False, None, years_used, True, capex_intensity
     cum_adj_fcf = sum(p.ocf - p.capex - p.sbc for p in window)
     ratio = cum_adj_fcf / cum_ni
-    return True, ratio, years_used, ratio >= EARNINGS_QUALITY_MIN
+    return True, ratio, years_used, ratio >= EARNINGS_QUALITY_MIN, capex_intensity
 
 
 # ---------------------------------------------------------------------------

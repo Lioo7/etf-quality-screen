@@ -78,6 +78,20 @@ rescue:
   reported); **N/A, never a fail**, when cumulative net income isn't positive
   — Track B's own quality gate already covers unprofitable names.
 
+  An EQ failure has **two readings**, and the ratio's arithmetic cannot tell
+  them apart. The bad one is accrual rot: reported profits that never become
+  cash because revenue was recognized aggressively or receivables are
+  ballooning. The benign one is heavy reinvestment: a company pouring cash
+  into growth capex and working-capital build (fabs, datacenters, inventory
+  ahead of demand) depresses adjusted FCF for reasons that have nothing to do
+  with accounting quality — NVDA (~0.76) and TSM (~0.58) fail the gate this
+  way. The threshold never moves, but when cumulative capex over the same
+  3-year window exceeds **15% of revenue**, the rejection carries an
+  informational note — *"EQ shortfall may reflect capex intensity, not
+  accruals"* — and the capex/revenue figure is exported, so a failed name can
+  be re-judged by a human with the right frame instead of being mistaken for
+  an accounting red flag.
+
 **Multi-year consistency gate.** Optional durability check over annual history
 (`--consistency-years N`, default 3) layered on a snapshot qualifier:
 
