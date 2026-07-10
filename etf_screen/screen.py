@@ -575,10 +575,20 @@ def evaluate(c: Company, consistency_years: int = 0,
         needs_data_eligible = quality_a and peg is None and pass_ps
         if eligible or needs_data_eligible:
             wl_bs_reasons, wl_consistency = _run_quality_gates(quality_a)
-            if not wl_bs_reasons and (
-                wl_consistency is None
-                or wl_consistency.status is ConsistencyStatus.PASS
-            ):
+            hist_status = None if wl_consistency is None else wl_consistency.status
+            if needs_data_eligible:
+                # NEEDS_DATA is the no-failure state: only a real gate FAIL
+                # rejects the candidacy. INSUFFICIENT history is one more
+                # missing-data condition (the unsponsored-ADR profile pairs
+                # thin estimates WITH thin history), not a verdict — the
+                # attached consistency result reports it honestly.
+                candidacy_clears = hist_status is not ConsistencyStatus.FAIL
+            else:
+                # WATCHLIST claims "every quality gate passed" — INSUFFICIENT
+                # can't back that claim, and the name already carries a real
+                # valuation failure, so plain REJECTED stays truthful.
+                candidacy_clears = hist_status in (None, ConsistencyStatus.PASS)
+            if not wl_bs_reasons and candidacy_clears:
                 consistency = wl_consistency
                 roic_hist = roic_history(c.history)
                 margin_prof = margin_profile(c.history)

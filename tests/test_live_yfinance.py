@@ -44,6 +44,19 @@ def test_msft_ipo_date_is_sourced(msft):
     assert msft.ipo_date.startswith("1986")
 
 
+def test_keyence_classifies_needs_data():
+    # The motivating Fix-3 case: KYCCF (unsponsored ADR) passes every testable
+    # gate but has no forward estimates -> NEEDS_DATA, not a PEG rejection.
+    from etf_screen.providers import DataUnavailable, YFinanceProvider
+    from etf_screen.screen import ScreenStatus, evaluate
+    try:
+        c = YFinanceProvider().fetch("KYCCF")
+    except DataUnavailable as exc:
+        pytest.skip(f"KYCCF fundamentals not sourceable live: {exc}")
+    r = evaluate(c, consistency_years=3, consistency_mode="trend")
+    assert r.status is ScreenStatus.NEEDS_DATA
+
+
 def test_recent_listing_classifies_recent_ipo():
     # SPCX listed 2026-06-12 -- inside the default 12-month seasoning window,
     # so a live run must classify it RECENT_IPO, not screen it as a normal name.

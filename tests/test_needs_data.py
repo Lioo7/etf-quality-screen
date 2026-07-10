@@ -66,10 +66,31 @@ def test_unprofitable_peg_na_is_never_needs_data():
     assert not any("overrides.json" in reason for reason in r.reasons)
 
 
-def test_insufficient_hypothetical_history_blocks_needs_data():
-    # Mirrors the WATCHLIST rule: the candidacy requires the consistency gate
-    # to clear (or not run); too little history -> stays plain REJECTED.
+def test_insufficient_history_is_still_needs_data():
+    # The live KYCCF profile: an unsponsored ADR pairs missing estimates WITH
+    # thin annual history. Neither is a failed test, so the name stays
+    # NEEDS_DATA (the attached consistency result reports INSUFFICIENT) —
+    # only a real gate FAIL rejects the candidacy (next test). This is
+    # deliberately looser than WATCHLIST, which claims "every quality gate
+    # passed" and therefore requires a consistency PASS.
     r = evaluate(_keyence_like(), consistency_years=3)
+    assert r.status is ScreenStatus.NEEDS_DATA
+    assert r.consistency is not None
+    assert r.consistency.status.name == "INSUFFICIENT"
+
+
+def test_consistency_fail_blocks_needs_data():
+    # A real historical failure (a sub-40 windowed year under strict) is a
+    # verdict, not a data gap -> estimates could not have saved it -> REJECTED.
+    from etf_screen.screen import AnnualPeriod
+    c = _keyence_like()
+    c.history = [
+        AnnualPeriod("2021", 600, 240, 30, 30),
+        AnnualPeriod("2022", 630, 240, 30, 30),   # decel year, Rule40 < 40
+        AnnualPeriod("2023", 800, 320, 40, 40),
+        AnnualPeriod("2024", 1000, 400, 50, 50),
+    ]
+    r = evaluate(c, consistency_years=3, consistency_mode="strict")
     assert r.status is ScreenStatus.REJECTED and not r.needs_data
 
 

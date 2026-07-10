@@ -128,8 +128,11 @@ unsponsored ADRs are the classic case (Keyence/KYCCF in the live Japan run).
 Rejecting them would conflate a failed test with an unadministrable one, and
 no price movement can fix missing estimates. So a name whose **only** blocker
 is an uncomputable PEG — profitable, and every *testable* gate passing (P/S
-included, plus the same balance-sheet / earnings-quality / consistency gates a
-`WATCHLIST` candidate must clear) — is classified `NEEDS_DATA`: its own report
+included, plus the same balance-sheet / earnings-quality gates a `WATCHLIST`
+candidate must clear; *insufficient* history is tolerated as one more missing-
+data condition, since unsponsored ADRs pair thin estimates with thin history,
+but a real consistency **failure** still rejects) — is classified
+`NEEDS_DATA`: its own report
 and export section, never in the shortlist, with the pointer that verified
 `forward_pe` / `forward_eps_growth` values in `overrides.json` complete the
 screen. Boundaries: a *computable* failed PEG keeps its normal fate
