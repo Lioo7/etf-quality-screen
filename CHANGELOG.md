@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.2.1 — 2026-07-10
+
+Live-fire fixes from the first real v0.2 runs (QQQ / Israel-tech /
+Japan-automation, 2026-07-09).
+
+- **TTM basis triggers again.** Yahoo now publishes only ~5 quarterly statement
+  columns, so the v0.2 TTM condition (8 revenue quarters for a summable
+  prior-year TTM) never held and every live name fell to ANNUAL basis. Level
+  metrics still sum the newest 4 quarters (true TTM); growth now derives from
+  the newest quarter vs its date-aligned year-ago counterpart — both raw
+  sourced lines, flagged, never estimated — with the 8-quarter true-prior-TTM
+  path kept for when it exists and the honest annual fallback unchanged.
+- **IPO dates source again.** yfinance renamed Yahoo's first-trade field to
+  `firstTradeDateMilliseconds` (epoch ms); the extractor now honors both names,
+  each per its documented unit. RECENT_IPO works in live runs (SPCX verified);
+  the never-guess rule and `ipo_date_unknown` flag are unchanged.
+- **`NEEDS_DATA` classification.** "PEG untestable" is no longer conflated with
+  "PEG failed": a profitable name whose only blocker is an uncomputable PEG
+  (no forward estimates — unsponsored ADRs like Keyence) while every testable
+  gate passes gets its own section/export status with an overrides.json hint.
+  A computable failed PEG keeps its v0.2 fate; Track B stays barred.
+- **Capex-intensity annotation on earnings-quality failures.** The EQ ratio
+  can't tell accrual rot from reinvestment (NVDA 0.76, TSM 0.58); when capex
+  exceeds 15% of revenue over the same window, the rejection carries "EQ
+  shortfall may reflect capex intensity, not accruals" and the figure is
+  exported. The threshold itself is unchanged.
+- **One `_run_quality_gates` source.** The duplicated qualifier gate block
+  (real track vs WATCHLIST/NEEDS_DATA candidacy) is now a single closure, so a
+  future gate can't be added to one path and forgotten in the other.
+- **Universe hygiene.** CYBR removed (acquired by Palo Alto Networks,
+  delisted); DAIUF→DFKCY (prefer the sponsored ADR); dead HRLBF→HSYDF; TSEM
+  kept (its 07-09 failure was a transient Yahoo miss). README notes that ROIC
+  on negative-equity names (BKNG) renders N/A/unstable by construction.
+- Live-network acceptance tests under `RUN_LIVE_TESTS=1`.
+
 ## v0.2 — 2026-07-08
 
 - **README "Reading a result" walkthrough.** One full mock run exercising

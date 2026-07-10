@@ -24,6 +24,7 @@ COLUMNS = [
     "sbc_pct", "peg", "net_debt_to_fcf", "goodwill_to_assets", "roic",
     "roic_median", "roic_years", "roic_durable",
     "earnings_quality_ratio", "earnings_quality_years", "earnings_quality_applicable",
+    "eq_capex_intensity_pct",
     "gm_latest", "gm_stddev", "gm_years", "pricing_power", "gm_not_applicable",
     "pct_off_ath", "three_month_return", "hot", "price_history_years",
     "unlock_ps_price", "unlock_peg_price",
@@ -114,6 +115,7 @@ def _result_row(r: Result) -> dict:
         "earnings_quality_ratio": _num(r.earnings_quality_ratio, 2),
         "earnings_quality_years": r.earnings_quality_years,
         "earnings_quality_applicable": r.earnings_quality_applicable,
+        "eq_capex_intensity_pct": _num(r.eq_capex_intensity),
         "gm_latest": _gm_field(r, "gm_latest"), "gm_stddev": _gm_field(r, "gm_stddev"),
         "gm_years": _gm_field(r, "years_used", 0),
         "pricing_power": bool(r.margin_profile and r.margin_profile.pricing_power),
@@ -143,9 +145,10 @@ def _skipped_row(ticker: str, name: str, reason: str) -> dict:
 
 
 def build_rows(results: list[Result], skipped, names: dict[str, str]) -> list[dict]:
-    """Survivors, then watchlist, then the rest (by Rule of 40), then skipped."""
+    """Survivors, watchlist, needs-data, then the rest (by Rule of 40), then skipped."""
     ordered = sorted(results,
-                     key=lambda r: (not r.passed, not r.watchlist, -_safe(r.rule40)))
+                     key=lambda r: (not r.passed, not r.watchlist, not r.needs_data,
+                                    -_safe(r.rule40)))
     rows = [_result_row(r) for r in ordered]
     rows += [_skipped_row(s.ticker, names.get(s.ticker, s.ticker), s.reason)
              for s in skipped]

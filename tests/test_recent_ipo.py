@@ -51,6 +51,23 @@ def test_zero_months_disables_the_check():
     assert not _ipo_is_recent("2026-07-01", 0, TODAY)
 
 
+def test_yf_first_trade_date_handles_both_field_variants():
+    # yfinance shipped the field as firstTradeDateEpochUtc (seconds), then as
+    # firstTradeDateMilliseconds (~2026) -- each converted per its own unit,
+    # never guessed from magnitude. Absent/junk -> None (the never-guess rule).
+    from etf_screen.providers import _yf_first_trade_date
+    assert _yf_first_trade_date({"firstTradeDateEpochUtc": 511056000}) == "1986-03-13"
+    assert _yf_first_trade_date(
+        {"firstTradeDateMilliseconds": 511056000000}) == "1986-03-13"
+    # Seconds field wins when both are present (it needs no unit conversion).
+    assert _yf_first_trade_date(
+        {"firstTradeDateEpochUtc": 511056000,
+         "firstTradeDateMilliseconds": 999}) == "1986-03-13"
+    assert _yf_first_trade_date({}) is None
+    assert _yf_first_trade_date({"firstTradeDateMilliseconds": "junk"}) is None
+    assert _yf_first_trade_date({"firstTradeDateEpochUtc": 0}) is None
+
+
 # --- integration with evaluate() ----------------------------------------------
 def test_recent_ipo_overrides_a_would_be_pass():
     c = _passing(ipo_date="2026-03-01")

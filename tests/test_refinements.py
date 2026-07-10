@@ -46,6 +46,78 @@ def test_ttm_basis_used_when_full_year_available():
     assert not any("ANNUAL" in m for m in c.low_confidence)
 
 
+def test_ttm_basis_from_five_quarters_uses_quarter_yoy_growth():
+    # Yahoo caps quarterly statements at ~5 columns (observed 2026-07), so the
+    # prior-year TTM (quarters 5-8) is unpublished. Levels still sum the newest
+    # 4 quarters (true TTM); growth derives from the date-aligned same-quarter
+    # YoY pair -- both raw sourced lines, never an estimate.
+    q_inc = _frame({
+        "Total Revenue": [130, 120, 115, 110, 100],
+        "Diluted Average Shares": [10, 10, 10, 10, 11],
+        "Net Income": [20] * 5,
+    }, 5)
+    q_cf = _frame({"Operating Cash Flow": [30] * 5, "Capital Expenditure": [-5] * 5,
+                   "Stock Based Compensation": [2] * 5}, 5)
+    c = _extract_yf("TST", q_inc=q_inc, a_inc=None, q_cf=q_cf, a_cf=None, info=INFO)
+    assert c.basis == "TTM"
+    assert c.revenue_ttm == 475                            # 130+120+115+110
+    assert c.revenue_ttm_prior != c.revenue_ttm_prior      # NaN: not summable
+    assert (c.revenue_latest_q, c.revenue_year_ago_q) == (130.0, 100.0)
+    assert (c.diluted_shares_now, c.diluted_shares_prior) == (10.0, 11.0)
+    assert any("latest-quarter YoY" in m for m in c.low_confidence)
+    r = evaluate(c)
+    assert r.evaluable
+    assert r.growth == pytest.approx(30.0)                 # (130-100)/100
+
+
+def test_eight_quarters_still_uses_true_prior_ttm():
+    # When Yahoo does publish 8 quarters, the true prior-TTM sum wins and the
+    # quarterly YoY pair is not attached.
+    q_inc = _frame({
+        "Total Revenue": [130, 120, 115, 110, 100, 95, 90, 85],
+        "Diluted Average Shares": [10] * 8,
+        "Net Income": [20] * 8,
+    }, 8)
+    q_cf = _frame({"Operating Cash Flow": [30] * 8, "Capital Expenditure": [-5] * 8,
+                   "Stock Based Compensation": [2] * 8}, 8)
+    c = _extract_yf("TST", q_inc=q_inc, a_inc=None, q_cf=q_cf, a_cf=None, info=INFO)
+    assert c.basis == "TTM"
+    assert c.revenue_ttm == 475 and c.revenue_ttm_prior == 370
+    assert c.revenue_latest_q is None and c.revenue_year_ago_q is None
+    assert not any("latest-quarter YoY" in m for m in c.low_confidence)
+
+
+def test_five_quarters_with_a_gap_fall_back_to_annual():
+    # A missing middle quarter breaks the 350-380d alignment between the newest
+    # column and any candidate year-ago column -> pairing different fiscal
+    # quarters would re-introduce seasonality, so the honest annual path runs.
+    cols = pd.to_datetime(
+        ["2025-12-31", "2025-09-30", "2025-06-30", "2025-03-31", "2024-09-30"])
+    q_inc = pd.DataFrame(
+        {"Total Revenue": [130, 120, 115, 110, 95],
+         "Diluted Average Shares": [10] * 5,
+         "Net Income": [20] * 5},
+        index=cols).T
+    q_cf = _frame({"Operating Cash Flow": [30] * 4, "Capital Expenditure": [-5] * 4,
+                   "Stock Based Compensation": [2] * 4}, 4)
+    a_inc = _frame({"Total Revenue": [400, 350], "Diluted Average Shares": [10, 11],
+                    "Net Income": [70, 55]}, 2)
+    a_cf = _frame({"Operating Cash Flow": [118], "Capital Expenditure": [-18],
+                   "Stock Based Compensation": [9]}, 1)
+    c = _extract_yf("TST", q_inc=q_inc, a_inc=a_inc, q_cf=q_cf, a_cf=a_cf, info=INFO)
+    assert c.basis == "annual"
+    assert c.revenue_latest_q is None and c.revenue_year_ago_q is None
+
+
+def test_growth_pair_ignored_when_year_ago_not_positive():
+    # A non-positive year-ago quarter can't base a growth rate; the derivation
+    # falls back to the TTM pair rather than dividing by it.
+    c = Company("TST", 1000, 700, 400, 50, 50, 1000, 1000, 5000, 30.0, 20.0, 200,
+                revenue_latest_q=130.0, revenue_year_ago_q=0.0)
+    r = evaluate(c)
+    assert r.growth == pytest.approx((1000 - 700) / 700 * 100)
+
+
 def test_annual_basis_uses_annual_cashflow_for_consistency():
     # Only 4 income quarters -> cannot form prior TTM -> annual basis for ALL.
     q_inc = _frame({"Total Revenue": [100] * 4, "Diluted Average Shares": [10] * 4,

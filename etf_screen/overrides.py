@@ -40,6 +40,9 @@ _BALANCE_SHEET = {
 # Optional informational scalars: patchable when the user has verified values,
 # never required (unknown is a flagged, first-class state for all of them).
 _INFORMATIONAL = {"ipo_date", "current_price", "ath_price", "price_3mo_ago"}
+# Optional quarterly growth-pair lines (see Company.revenue_latest_q): patchable,
+# never required — a from-scratch rescue supplies revenue_ttm_prior instead.
+_GROWTH_PAIR = {"revenue_latest_q", "revenue_year_ago_q"}
 # Fields a user may override / supply. Scalar snapshot lines only — annual
 # `history` is intentionally not overridable here, so an override-rescued name
 # carries no history and lands in INSUFFICIENT_HISTORY when the gate runs.
@@ -47,11 +50,12 @@ _OVERRIDABLE = {
     "name", "revenue_ttm", "revenue_ttm_prior", "ocf_ttm", "capex_ttm",
     "sbc_ttm", "diluted_shares_now", "diluted_shares_prior", "market_cap",
     "forward_pe", "forward_eps_growth", "net_income_ttm",
-} | _BALANCE_SHEET | _INFORMATIONAL
+} | _BALANCE_SHEET | _INFORMATIONAL | _GROWTH_PAIR
 # Fields that must all be present to construct a Company from scratch (the
-# balance-sheet lines and informational scalars are excluded — they fall back
-# to Company defaults).
-_REQUIRED = _OVERRIDABLE - {"name", "forward_pe"} - _BALANCE_SHEET - _INFORMATIONAL
+# balance-sheet lines, informational scalars, and growth-pair lines are
+# excluded — they fall back to Company defaults).
+_REQUIRED = (_OVERRIDABLE - {"name", "forward_pe"}
+             - _BALANCE_SHEET - _INFORMATIONAL - _GROWTH_PAIR)
 
 
 def load_overrides(path: str | Path = DEFAULT_PATH) -> dict[str, dict]:
@@ -89,9 +93,10 @@ def company_from_override(ticker: str, fields: dict) -> Company | None:
     if not _REQUIRED.issubset(fields):
         return None
     numeric = {k: fields[k] for k in _REQUIRED}
-    # Honor any supplied balance-sheet lines and informational scalars; the rest
-    # fall back to Company defaults.
-    extra = {k: fields[k] for k in _BALANCE_SHEET | _INFORMATIONAL if k in fields}
+    # Honor any supplied balance-sheet lines, informational scalars, and
+    # growth-pair lines; the rest fall back to Company defaults.
+    extra = {k: fields[k] for k in _BALANCE_SHEET | _INFORMATIONAL | _GROWTH_PAIR
+             if k in fields}
     company = Company(
         ticker=ticker, forward_pe=fields.get("forward_pe"),
         basis="override", **numeric, **extra,
