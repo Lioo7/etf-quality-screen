@@ -60,24 +60,26 @@ _WIKI: dict[str, _WikiSource] = {
     ),
 }
 
-# Dated static fallback (as_of below). Trimmed to a representative slice of the
-# Nasdaq-100 by weight; refresh periodically. Used only when Wikipedia fails.
-_STATIC_AS_OF = "2026-06-01"
+# Dated static fallback (as_of below). Used only when Wikipedia fails.
+# Source: live Wikipedia Nasdaq-100 table fetched 2026-07-09 (103 tickers;
+# SPCX added to the index effective 2026-07-07). Prefer --holdings with the
+# official Invesco QQQ CSV when refreshing the example run.
+_STATIC_AS_OF = "2026-07-09"
 _STATIC: dict[str, list[str]] = {
     "QQQ": [
-        "AAPL", "MSFT", "NVDA", "AMZN", "AVGO", "META", "GOOGL", "GOOG",
-        "TSLA", "COST", "NFLX", "PLTR", "AMD", "CSCO", "TMUS", "INTC",
-        "INTU", "PEP", "ADBE", "TXN", "QCOM", "AMGN", "ISRG", "BKNG",
-        "HON", "AMAT", "CRWD", "PANW", "ADP", "GILD", "VRTX", "ADI",
-        "MU", "SBUX", "LRCX", "MELI", "KLAC", "REGN", "CEG", "PYPL",
-        "SNPS", "CDNS", "MAR", "ASML", "ORLY", "CSX", "MRVL", "FTNT",
-        "ABNB", "WDAY", "CTAS", "ADSK", "NXPI", "PCAR", "ROP", "MNST",
-        "AEP", "PAYX", "CPRT", "FANG", "KDP", "ROST", "ODFL", "CHTR",
-        "DDOG", "BKR", "EA", "VRSK", "KHC", "EXC", "GEHC", "CCEP",
-        "LULU", "FAST", "CTSH", "XEL", "TTWO", "IDXX", "ON", "ZS",
-        "DXCM", "ANSS", "WBD", "MCHP", "GFS", "TEAM", "CDW", "BIIB",
-        "ARM", "MRNA", "DASH", "SMCI", "TTD", "MDB", "CSGP", "ILMN",
-        "WBA", "MDLZ", "LIN", "PDD",
+        "AAPL", "ABNB", "ADBE", "ADI", "ADP", "ADSK", "AEP", "ALAB",
+        "ALNY", "AMAT", "AMD", "AMGN", "AMZN", "APP", "ARM", "ASML",
+        "AVGO", "AXON", "BKNG", "BKR", "CCEP", "CDNS", "CEG", "CMCSA",
+        "COST", "CPRT", "CRWD", "CRWV", "CSCO", "CSX", "CTAS", "DASH",
+        "DDOG", "DXCM", "EA", "EXC", "FANG", "FAST", "FER", "FTNT",
+        "GEHC", "GILD", "GOOG", "GOOGL", "HON", "HONA", "IDXX", "INTC",
+        "INTU", "ISRG", "KDP", "KHC", "KLAC", "LIN", "LITE", "LRCX",
+        "MAR", "MCHP", "MDLZ", "MELI", "META", "MNST", "MPWR", "MRVL",
+        "MSFT", "MSTR", "MU", "NBIS", "NFLX", "NVDA", "NXPI", "ODFL",
+        "ORLY", "PANW", "PAYX", "PCAR", "PDD", "PEP", "PLTR", "PYPL",
+        "QCOM", "REGN", "RKLB", "ROP", "ROST", "SBUX", "SHOP", "SNDK",
+        "SNPS", "SPCX", "STX", "TER", "TMUS", "TRI", "TSLA", "TTWO",
+        "TXN", "VRTX", "WBD", "WDAY", "WDC", "WMT", "XEL",
     ],
 }
 

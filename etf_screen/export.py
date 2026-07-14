@@ -31,6 +31,7 @@ COLUMNS = [
     "net_income_ttm", "rule40_hist", "consistency", "ipo_date",
     "sector_med_rule40", "sector_med_ps", "sector_med_peg",
     "basis", "sbc_assumed_zero", "manual_override", "reason", "low_confidence",
+    "otc_adr_data_suspect", "financial_sector_note",
 ]
 
 
@@ -137,6 +138,8 @@ def _result_row(r: Result) -> dict:
         "basis": r.basis,
         "sbc_assumed_zero": r.sbc_assumed_zero, "manual_override": r.manual_override,
         "reason": "; ".join(r.reasons), "low_confidence": "; ".join(r.company.low_confidence),
+        "otc_adr_data_suspect": r.otc_adr_data_suspect,
+        "financial_sector_note": r.financial_sector_note or "",
     }
 
 

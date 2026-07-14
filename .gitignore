@@ -10,3 +10,6 @@ etf_screen_*.md
 
 # Generated screen outputs (regenerable, point-in-time; keep local)
 results/
+
+# Issuer holdings CSVs dropped for --holdings runs (keep README)
+holdings/*.csv

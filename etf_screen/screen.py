@@ -68,6 +68,34 @@ SECTOR_MIN_PEERS = 5    # don't compute a sector median below this many peers
 # Result attributes whose per-sector median we report (adj_fcf_margin == adj_margin).
 _SECTOR_METRICS = ("rule40", "p_s", "peg", "growth", "adj_margin", "sbc_pct")
 
+# --- honesty flags (INFORMATIONAL ONLY — never gates a verdict) ------------
+# 5-letter OTC ADR convention: unsponsored F-shares / sponsored Y-ADRs. Yahoo
+# routinely publishes broken market caps and thin statements for these lines.
+_OTC_ADR_SUFFIXES = frozenset({"Y", "F"})
+# Balance-sheet businesses: net-debt/FCF, OCF, and GM are structurally unreliable.
+FINANCIAL_SERVICES_SECTOR = "Financial Services"
+FINANCIAL_SECTOR_NOTE = (
+    "balance-sheet business — leverage/FCF/GM metrics unreliable; "
+    "analyze via sector-appropriate measures"
+)
+NEEDS_DATA_HINT = (
+    "PEG untestable: no forward estimates — supply forward_pe / "
+    "forward_eps_growth in overrides.json to complete the screen "
+    "(also a verified market_cap when the Yahoo cap looks wrong — "
+    "an uncorrected OTC/ADR cap would finish the screen against a "
+    "fictional valuation)"
+)
+
+
+def is_otc_adr_ticker(ticker: str) -> bool:
+    """True for the 5-letter OTC ADR convention (ticker ends in Y or F).
+
+    Informational only — never a gate. These lines routinely carry broken
+    caps/statements on Yahoo (e.g. Keyence/KYCCF).
+    """
+    t = (ticker or "").upper().replace("-", "").replace(".", "")
+    return len(t) == 5 and t.isalpha() and t[-1] in _OTC_ADR_SUFFIXES
+
 
 def pct(part: float, whole: float) -> float:
     """Return ``part/whole`` as a percentage, or NaN when ``whole`` is falsy.
@@ -328,8 +356,22 @@ class Result:
     def needs_data(self) -> bool:
         """Every testable gate passed but PEG could not be administered (no
         forward estimates) — a failed test rejects, an unadministrable one
-        asks for data. overrides.json can supply forward_pe / forward_eps_growth."""
+        asks for data. overrides.json can supply forward_pe / forward_eps_growth
+        (and a verified market_cap when the Yahoo cap looks wrong)."""
         return self.status is ScreenStatus.NEEDS_DATA
+
+    @property
+    def otc_adr_data_suspect(self) -> bool:
+        """Informational: 5-letter OTC ADR (ends in Y/F) — Yahoo caps/statements
+        often broken. Never a gate."""
+        return is_otc_adr_ticker(self.company.ticker)
+
+    @property
+    def financial_sector_note(self) -> str | None:
+        """Informational caveat for Financial Services names; never a gate."""
+        if (self.company.sector or "") == FINANCIAL_SERVICES_SECTOR:
+            return FINANCIAL_SECTOR_NOTE
+        return None
 
     @property
     def ipo_date_unknown(self) -> bool:
@@ -594,11 +636,7 @@ def evaluate(c: Company, consistency_years: int = 0,
                 margin_prof = margin_profile(c.history)
                 if needs_data_eligible:
                     status = ScreenStatus.NEEDS_DATA
-                    reasons = [
-                        "PEG untestable: no forward estimates — supply "
-                        "forward_pe / forward_eps_growth in overrides.json "
-                        "to complete the screen"
-                    ]
+                    reasons = [NEEDS_DATA_HINT]
                 else:
                     status = ScreenStatus.WATCHLIST
                     unlock_ps_price, unlock_peg_price = _unlock_prices(

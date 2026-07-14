@@ -135,10 +135,17 @@ but a real consistency **failure** still rejects) — is classified
 `NEEDS_DATA`: its own report
 and export section, never in the shortlist, with the pointer that verified
 `forward_pe` / `forward_eps_growth` values in `overrides.json` complete the
-screen. Boundaries: a *computable* failed PEG keeps its normal fate
+screen — and, when the Yahoo market cap looks wrong (unsponsored OTC ADRs
+routinely do; Keyence/KYCCF showed P/S 0.1 against a mid-single-digit sales
+multiple on the listed line), a verified `market_cap` too. Completing PEG
+against a fictional cap would finish the screen against a fictional valuation.
+Boundaries: a *computable* failed PEG keeps its normal fate
 (`WATCHLIST`/`REJECTED`); a name that also fails P/S or any quality gate stays
 plain rejected — more estimate data could not have saved it; Track B is
-untouched (PEG is structurally N/A there).
+untouched (PEG is structurally N/A there). Five-letter OTC ADR tickers (ending
+in `Y` or `F`) also carry the informational `otc_adr_data_suspect` flag —
+Yahoo caps/statements for those lines are routinely broken; the flag never
+gates.
 
 **IPO seasoning.** A name listed within the last 12 months
 (`--ipo-seasoning-months`, `0` disables) is set aside as `RECENT_IPO` — never
@@ -252,6 +259,15 @@ metrics and adds a **Sector** column to the table and export.
 > verdict, track routing, or which names survive — the four filters and two
 > tracks remain the sole gates. A regression test proves verdicts are identical
 > with and without it.
+
+**Financial Services caveat (informational).** Banks, payment networks, exchanges,
+and similar balance-sheet businesses (Yahoo sector `Financial Services`) carry an
+annotation: *"balance-sheet business — leverage/FCF/GM metrics unreliable;
+analyze via sector-appropriate measures."* Net-debt/FCF, OCF, and gross margin
+are structurally noisy for them; the flag surfaces in the console and export and
+**never** changes a verdict. Survivors like COF/AMP and watchlist names like
+MA/V/CME still screen under the fixed gates — the asterisk is a reading note,
+not a loophole.
 
 ### Exporting
 
@@ -387,7 +403,7 @@ RECENT_IPO (1) — listed within the last 12 months; ...
 | --- | --- | --- |
 | DURABLE, DECEL | PASS (Track A) | DECEL's dip year (33.6) is forgiven by `trend`; it fails under `--consistency-mode strict` |
 | CRWD | PASS (Track B) | PEG genuinely N/A; also tagged **HOT** (+58% in 3 mo, 5% off ATH) — a patience flag, not a rejection |
-| OPAQUE | NEEDS_DATA | every testable gate passes but PEG has no estimates to test — supply `forward_pe` via `overrides.json` |
+| OPAQUE | NEEDS_DATA | every testable gate passes but PEG has no estimates to test — supply `forward_pe` (and a verified `market_cap` if the Yahoo cap looks wrong) via `overrides.json` |
 | GOOGL | REJECTED | Rule of 40 = 33.0 — a quality fail, so no watchlist candidacy |
 | LEAKY | REJECTED | earnings quality: 3-yr AdjFCF/NI = 0.67 < 0.8 — profits not becoming cash |
 | ROLLUP / LEVERED | REJECTED | goodwill 60% of assets / Net Debt 3.7× FCF — balance-sheet gates |
@@ -396,13 +412,14 @@ RECENT_IPO (1) — listed within the last 12 months; ...
 
 ## Example runs
 
-Four real runs (2026-07-11, `--consistency-years 3`) are checked in under
-[`examples/`](examples/):
+Four real runs are checked in under [`examples/`](examples/) (QQQ refreshed
+2026-07-14; others 2026-07-11; all with `--consistency-years 3`):
 
-- **[QQQ (Nasdaq-100)](examples/qqq-2026-07-11.md)** — the flagship full-universe
-  run: a strict screen leaving 1 survivor + 2 watchlist from 100 evaluated, with
-  dense sector context. Shows the v0.2.1 TTM basis on the mega caps and META's
-  earnings-quality rejection carrying the capex-intensity note.
+- **[QQQ (Nasdaq-100)](examples/qqq-2026-07-14.md)** — the flagship full-universe
+  run against the 2026-07-09 Wikipedia snapshot (103 tickers, including SPCX):
+  3 survivors + 2 watchlist. Prefer regenerating from the official Invesco CSV
+  at [`holdings/qqq-holdings.csv`](holdings/qqq-holdings.csv) via `--holdings`
+  when you have it (see below).
 - **[SPY (S&P 500)](examples/spy-2026-07-11.md)** — the widest run (~500 names);
   the same fixed gates at scale.
 - **[Israel tech ADRs](examples/israel-tech-adr-2026-07-11.md)** — a curated
@@ -411,11 +428,23 @@ Four real runs (2026-07-11, `--consistency-years 3`) are checked in under
 - **[Japan automation ADRs](examples/japan-automation-adr-2026-07-11.md)** —
   another thesis list; Keyence (KYCCF) is the live `NEEDS_DATA` case — a
   profitable name whose only blocker is an untestable PEG (no forward estimates
-  on the OTC F-share).
+  on the OTC F-share), with `otc_adr_data_suspect` set.
 
 Each doc carries a provenance header, the ranked shortlist, the sector-context
 view, and the full result set (collapsed). They are point-in-time snapshots —
 the header records exactly which data produced them.
+
+**Refreshing the QQQ example from the official Invesco holdings CSV** (preferred
+source of truth over Wikipedia/static):
+
+```bash
+# Drop the downloaded Invesco QQQ holdings CSV here (git-ignored):
+#   holdings/qqq-holdings.csv
+.venv/bin/python -m etf_screen.cli \
+  --holdings holdings/qqq-holdings.csv \
+  --consistency-years 3 --sector-context \
+  --export md --out examples/qqq-$(date +%F).md
+```
 
 ## Data providers
 
@@ -596,7 +625,7 @@ consult a qualified professional before any financial decision.
 ## Development
 
 ```bash
-pytest -q          # 184 tests (4 live-network, skipped unless RUN_LIVE_TESTS=1):
+pytest -q          # ~190 tests (4 live-network, skipped unless RUN_LIVE_TESTS=1):
                    # acceptance fixtures, edge cases, data layer,
                    # basis consistency, SBC-assumed-0, overrides, export,
                    # sector context (incl. the verdicts-unchanged regression),
@@ -605,8 +634,9 @@ pytest -q          # 184 tests (4 live-network, skipped unless RUN_LIVE_TESTS=1)
                    # pre-revenue firewall, the ROIC-history annotation, the
                    # earnings-quality gate, the gross-margin annotation, the
                    # RECENT_IPO seasoning classification, the entry-timing
-                   # annotations, WATCHLIST mode (incl. unlock-price math), and
-                   # the curated ticker-list loader
+                   # annotations, WATCHLIST mode (incl. unlock-price math),
+                   # the curated ticker-list loader, NEEDS_DATA, and the
+                   # informational honesty flags (OTC ADR + Financial Services)
 flake8 etf_screen tests
 ```
 

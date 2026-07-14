@@ -36,6 +36,21 @@ Japan-automation, 2026-07-09).
 - **Exports default to `results/`.** Runs now write to the git-ignored
   `results/` directory instead of the repo root (`--out` still overrides);
   committed curated snapshots live only in `examples/`.
+- **QQQ static fallback → 2026-07-09.** Bundled Nasdaq-100 list refreshed from
+  the live Wikipedia fetch that day (103 tickers, including SPCX added
+  2026-07-07). Preferred refresh path: drop the official Invesco QQQ holdings
+  CSV at `holdings/qqq-holdings.csv` and regenerate via `--holdings`.
+- **`NEEDS_DATA` hint mentions `market_cap`.** Completing PEG against a fictional
+  Yahoo OTC/ADR cap (Keyence/KYCCF P/S 0.1) would finish the screen against a
+  fictional valuation — overrides may need a verified `market_cap`, not just
+  forward estimates.
+- **`otc_adr_data_suspect` flag (informational).** 5-letter OTC ADR convention
+  (ends in Y or F); Yahoo caps/statements for these lines are routinely broken.
+  Never a gate.
+- **Financial Services asterisk (informational).** Results in sector
+  `Financial Services` carry *"balance-sheet business — leverage/FCF/GM metrics
+  unreliable; analyze via sector-appropriate measures"* in console + export.
+  Never changes a verdict.
 - Live-network acceptance tests under `RUN_LIVE_TESTS=1`.
 
 ## v0.2 — 2026-07-08

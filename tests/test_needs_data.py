@@ -24,6 +24,7 @@ def test_peg_untestable_all_else_passing_is_needs_data():
     assert r.status is ScreenStatus.NEEDS_DATA and r.needs_data
     assert not r.passed and not r.watchlist and r.track == "—"
     assert any("overrides.json" in reason for reason in r.reasons)
+    assert any("market_cap" in reason for reason in r.reasons)
     # Quality cleared -> the advisory annotations attach (like WATCHLIST)...
     assert r.roic_history is not None and r.margin_profile is not None
     # ...but there is no unlock price: no valuation filter failed.

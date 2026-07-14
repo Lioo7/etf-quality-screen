@@ -301,7 +301,10 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
         print(f"\nNEEDS_DATA ({len(needs_data)}) — every testable gate passed but PEG "
               f"had no forward estimates to test (common for unsponsored ADRs). Not "
               f"in the shortlist; verify estimates yourself and supply forward_pe / "
-              f"forward_eps_growth in overrides.json to complete the screen:")
+              f"forward_eps_growth in overrides.json to complete the screen "
+              f"(also a verified market_cap when the Yahoo cap looks wrong — an "
+              f"uncorrected OTC/ADR cap would finish the screen against a fictional "
+              f"valuation):")
         for r in needs_data:
             print(f"  {r.ticker} ({_short(r.name)}): Rule40 {_f(r.rule40)}, "
                   f"P/S {_f(r.p_s, 1)} vs guardrail {_f(r.ps_guardrail, 1)}, "
@@ -482,6 +485,10 @@ def _flags(r: Result) -> str:
         tags.append(f"basis: {r.basis}")
     if r.company.low_confidence:
         tags.append("low-confidence: " + ", ".join(r.company.low_confidence))
+    if r.otc_adr_data_suspect:
+        tags.append("otc_adr_data_suspect: Yahoo OTC ADR caps/statements often broken")
+    if r.financial_sector_note:
+        tags.append(r.financial_sector_note)
     if r.roic_history and r.roic_history.durable:
         tags.append("roic_durable")
     if r.margin_profile and r.margin_profile.pricing_power:
