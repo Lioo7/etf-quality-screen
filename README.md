@@ -259,8 +259,10 @@ metrics and adds a **Sector** column to the table and export.
 skipped — with every metric, the track label, the rejection/skip reason, and the
 confidence/basis flags, in addition to the console output. A provenance header
 (provider, source, as-of, run date) is included as CSV comment lines or a
-Markdown header block. Default filename: `etf_screen_<universe>_<YYYY-MM-DD>.<ext>`
-(override with `--out`).
+Markdown header block. Exports land in `results/` by default (git-ignored,
+regenerable point-in-time snapshots) as
+`results/etf_screen_<universe>_<YYYY-MM-DD>.<ext>` — override the full path with
+`--out`. Committed, curated example runs live under [`examples/`](examples/).
 
 ```bash
 python -m etf_screen.cli --universe qqq --export csv
@@ -394,16 +396,22 @@ RECENT_IPO (1) — listed within the last 12 months; ...
 
 ## Example runs
 
-Two real runs are checked in under [`examples/`](examples/):
+Four real runs (2026-07-11, `--consistency-years 3`) are checked in under
+[`examples/`](examples/):
 
-- **[QQQ (Nasdaq-100)](examples/qqq-2026-06-19.md)** — the flagship full-universe
-  run: 8 survivors from 100 evaluated, with dense sector context (most sectors
-  clear the 5-peer bar).
-- **[ARKK (ARK Innovation ETF)](examples/arkk-2026-06-19.md)** — resolved from
-  ARK's official holdings CSV via `--holdings`; a small, concentrated universe
-  that shows the sparse-sector case and many hyper-growth names correctly barred
-  from Track B by its quality gate. The basket snapshot is committed alongside as
-  [`examples/arkk-holdings.csv`](examples/arkk-holdings.csv).
+- **[QQQ (Nasdaq-100)](examples/qqq-2026-07-11.md)** — the flagship full-universe
+  run: a strict screen leaving 1 survivor + 2 watchlist from 100 evaluated, with
+  dense sector context. Shows the v0.2.1 TTM basis on the mega caps and META's
+  earnings-quality rejection carrying the capex-intensity note.
+- **[SPY (S&P 500)](examples/spy-2026-07-11.md)** — the widest run (~500 names);
+  the same fixed gates at scale.
+- **[Israel tech ADRs](examples/israel-tech-adr-2026-07-11.md)** — a curated
+  `--tickers-file` thesis list (`--sector-context`); GLBE passes Track A, CHKP
+  lands on the watchlist.
+- **[Japan automation ADRs](examples/japan-automation-adr-2026-07-11.md)** —
+  another thesis list; Keyence (KYCCF) is the live `NEEDS_DATA` case — a
+  profitable name whose only blocker is an untestable PEG (no forward estimates
+  on the OTC F-share).
 
 Each doc carries a provenance header, the ranked shortlist, the sector-context
 view, and the full result set (collapsed). They are point-in-time snapshots —

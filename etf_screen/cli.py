@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--export", choices=("csv", "md"), default=None,
                    help="also write the full result set to a file")
     p.add_argument("--out", default=None,
-                   help="export path (default: etf_screen_<universe>_<date>.<ext>)")
+                   help="export path (default: results/etf_screen_<universe>_<date>.<ext>)")
     p.add_argument("--sector-context", action="store_true",
                    help="show the verbose sector-context view (informational; the "
                         "Sector column and export fields are always present)")
@@ -176,8 +176,14 @@ def run(args) -> int:
 def _do_export(args, source, as_of, results, skipped, names, label) -> None:
     universe = label
     run_date = date.today().isoformat()
-    path = Path(args.out) if args.out else Path(
-        export_mod.default_filename(universe, run_date, args.export))
+    if args.out:
+        path = Path(args.out)
+    else:
+        # Default export lands in results/ (git-ignored, regenerable snapshots);
+        # committed curated snapshots live only in examples/.
+        path = export_mod.DEFAULT_EXPORT_DIR / export_mod.default_filename(
+            universe, run_date, args.export)
+        path.parent.mkdir(parents=True, exist_ok=True)
     prov = export_mod.Provenance(args.provider, universe, source, as_of, run_date)
     rows = export_mod.build_rows(results, skipped, names)
     export_mod.export(path, args.export, prov, rows)

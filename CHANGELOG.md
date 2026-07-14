@@ -33,6 +33,9 @@ Japan-automation, 2026-07-09).
   delisted); DAIUF→DFKCY (prefer the sponsored ADR); dead HRLBF→HSYDF; TSEM
   kept (its 07-09 failure was a transient Yahoo miss). README notes that ROIC
   on negative-equity names (BKNG) renders N/A/unstable by construction.
+- **Exports default to `results/`.** Runs now write to the git-ignored
+  `results/` directory instead of the repo root (`--out` still overrides);
+  committed curated snapshots live only in `examples/`.
 - Live-network acceptance tests under `RUN_LIVE_TESTS=1`.
 
 ## v0.2 — 2026-07-08

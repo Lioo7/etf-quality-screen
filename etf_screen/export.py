@@ -43,6 +43,11 @@ class Provenance:
     run_date: str
 
 
+# Default directory for exports (git-ignored, regenerable point-in-time
+# snapshots); overridden by --out. Committed curated snapshots live in examples/.
+DEFAULT_EXPORT_DIR = Path("results")
+
+
 def default_filename(universe: str, run_date: str, fmt: str) -> str:
     return f"etf_screen_{universe}_{run_date}.{fmt}"
 
