@@ -1,0 +1,21 @@
+# Decisions
+
+Methodology and process decisions, with dates and reasons. The screening spec changes only through an entry here: a `spec-change` issue must update the tests that pin the old behavior and add or amend an entry in this file.
+
+## D1 — PEG growth basis (2026-11-19)
+Growth uses one earnings basis and horizon on both sides of the PEG ratio (expected: analyst-consensus adjusted EPS, current fiscal year to next). `PEG_MAX` stays 2; verdict flips are accepted. Reason: the current growth mixes GAAP trailing EPS with an analyst forward estimate, which inflates growth and yields implausibly low PEGs (Nov-19 SPY median 0.52). The final definition is recorded here after the PEG research issue.
+
+## D2 — Balance-sheet financials are NOT_APPLICABLE (2026-11-19)
+Banks, insurers, brokers, asset managers and consumer lenders get `NOT_APPLICABLE`. Asset-light payment networks (V, MA) stay evaluable. Reason: for a balance-sheet business, operating cash flow includes loan and deposit flows, so FCF margin and Rule of 40 are not meaningful. A separate bank methodology is not planned; revisit only if one of these names is wanted for the satellite sleeve.
+
+## D3 — Cyclicality is an informational flag (2026-11-19)
+Add an informational `CYCLICAL` flag only. Changing the trend-mode rule (e.g. median instead of mean) is deferred until the PEG fix lands and 2–3 runs show whether it is needed. Reason: a median rule would also drop young accelerating names (RDDT) that are not cyclical.
+
+## D4 — Universes come from issuer CSVs, never a silent stale list (2026-11-19)
+The issuer CSV is the primary source for QQQ and ARKK, refreshed automatically when stale and validated. A run never uses a stale list silently; `--allow-stale` is explicit. Reason: Wikipedia's Nasdaq-100 page lost its constituents table and the tool fell back to a July static list with only a stderr warning.
+
+## D5 — Scope: lean but portfolio-grade (2026-11-19)
+CI, packaging and a skimmable README now; mypy deferred; the LLM memo is its own milestone after M1. Reason: keep a solo project small while keeping it presentable and green.
+
+## D6 — Process: backlog in GitHub Issues (2026-11-19)
+The backlog lives in GitHub Issues (one goal, evidence, scope, Done-when). `spec-change` issues update the pinning tests and add an entry here. No personal portfolio details in issues (public repo).
