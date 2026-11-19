@@ -19,3 +19,6 @@ CI, packaging and a skimmable README now; mypy deferred; the LLM memo is its own
 
 ## D6 — Process: backlog in GitHub Issues (2026-11-19)
 The backlog lives in GitHub Issues (one goal, evidence, scope, Done-when). `spec-change` issues update the pinning tests and add an entry here. No personal portfolio details in issues (public repo).
+
+## D7 — LLM access (2026-11-19)
+The memo feature (#18) uses a swappable backend: (a) the user's own signed-in Claude Code CLI (`claude -p`), personal use only, drawing from that user's plan limits; (b) OpenRouter (OpenAI-compatible key); (c) an Anthropic API key. Every user brings their own credential; no tokens or keys in the repo; CI uses recorded responses only. Anthropic's rules for programmatic use of subscriptions changed several times in 2026, so re-check the 'Use the Claude Agent SDK with your Claude plan' help article before relying on (a).
