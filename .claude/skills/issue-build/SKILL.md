@@ -12,3 +12,4 @@ additions:
   stop and explain why before changing course.
 - For a research issue, the deliverable is the findings doc plus a summary comment on the
   issue; don't change etf_screen/ or tests/.
+Finally, read docs/queue.md and tell me which issue comes next once this PR is merged.

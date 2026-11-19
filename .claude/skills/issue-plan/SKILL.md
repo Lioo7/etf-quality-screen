@@ -14,3 +14,4 @@ Plan GitHub issue #$0. Don't edit any files.
    tests mapped to "Done when", risks to the CLAUDE.md invariants, open questions.
 4. Reply with the comment link and the open questions, then stop. I approve by running
    /issue-build $0.
+Finally, read docs/queue.md and tell me which issue comes next once this PR is merged.

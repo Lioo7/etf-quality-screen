@@ -25,3 +25,6 @@ The memo feature (#18) uses a swappable backend: (a) the user's own signed-in Cl
 
 ## D8 — No persona-agent layer (2026-11-19)
 ai-hedge-fund-style agents are not integrated. They output buy/sell views, need their own paid data source, re-analyze the same numbers, and can't be evaluated against ground truth. Qualitative context comes from the audited context check (#25).
+
+## D9 — Investor lenses (refines D8, 2026-11-19)
+We build our own lens layer: checklists of publicly documented principles (Buffett/Munger, Lynch, Wood, a skeptic), structured, source-tagged, no buy/sell, plus a synthesis brief audited by an evaluator (#27, #28). D8 still holds for ai-hedge-fund itself: its code is not integrated, and its prompts may inform ours with MIT attribution.

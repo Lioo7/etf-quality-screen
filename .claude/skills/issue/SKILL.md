@@ -21,3 +21,4 @@ Implement GitHub issue #$0.
 8. Commit (Conventional Commits; body ends with `closes #$0`), push the branch, open a PR
    whose body contains the evidence. Never merge.
 9. Reply with: the PR link, 3–5 bullets on what changed, the evidence, anything left open.
+Finally, read docs/queue.md and tell me which issue comes next once this PR is merged.

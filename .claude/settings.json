@@ -21,7 +21,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "out=$(.venv/bin/python -m pytest -q 2>&1) || { echo \"$out\" >&2; exit 2; }; out=$(.venv/bin/python -m flake8 etf_screen tests 2>&1) || { echo \"$out\" >&2; exit 2; }"
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && out=$(.venv/bin/python -m pytest -q 2>&1) || { echo \"$out\" >&2; exit 2; }; out=$(.venv/bin/python -m flake8 etf_screen tests 2>&1) || { echo \"$out\" >&2; exit 2; }"
           }
         ]
       }
