@@ -24,6 +24,10 @@ Run the screener:
 .venv/bin/python -m etf_screen.cli --provider mock --consistency-years 3 --consistency-mode trend  # full gate set
 ```
 
+## Backlog
+
+GitHub Issues. Run `gh issue list` before new work; one issue per session. Reference issues in commits (`closes #N`, `refs #N`). Format: `.github/ISSUE_TEMPLATE/task.md`. Decisions and reasons: `docs/decisions.md`; a `spec-change` issue adds an entry there. No personal portfolio details in issues (public repo).
+
 ## Architecture
 
 A CLI stock screener whose central design rule is **strict separation of screening logic from data sourcing**. The validated screening methodology is a *fixed spec* — do not redesign thresholds or filter/track routing; the acceptance tests enforce exact behavior.
@@ -53,7 +57,7 @@ A CLI stock screener whose central design rule is **strict separation of screeni
 
 ## Conventions
 
-- This is a solo side project: keep it lean, avoid over-engineering, maintain balanced README + inline docs.
+- Solo side project: lean but portfolio-grade. CI must stay green; avoid over-engineering; keep README and inline docs balanced.
 - Adding a field to `Company`: also update `_COMPANY_FIELDS` in `providers.py` (cache round-trip), `export.COLUMNS` if it should be exported, populate it in **every** provider, and — if it has a default — keep that default gate-passing so the positional/keyword test fixtures stay green. A new patchable scalar also goes in `overrides._OVERRIDABLE` (and stays out of `_REQUIRED` if it shouldn't block a from-scratch rescue — informational scalars like `ipo_date` and the price snapshot live in `overrides._INFORMATIONAL` for exactly this).
 - Informational `Company` fields (`ipo_date`, `current_price`, `ath_price`, `price_3mo_ago`, `price_history_years`) default to `None` = unknown, rendered N/A — **not** to a fabricated neutral value. yfinance price data comes from `history(period="max", auto_adjust=True)` (split/dividend-adjusted; a raw-close ATH would be meaningless after a split); a failed price/IPO-date fetch flags `low_confidence` but never skips the name.
 - `Result`'s verdict fields (`passed`, `evaluable`, `insufficient_history`) are **properties** derived from `ScreenStatus` — set `status`, never these. Add a new outcome by extending the enum + its properties, not by adding a parallel boolean.
