@@ -28,3 +28,9 @@ ai-hedge-fund-style agents are not integrated. They output buy/sell views, need 
 
 ## D9 — Investor lenses (refines D8, 2026-11-19)
 We build our own lens layer: checklists of publicly documented principles (Buffett/Munger, Lynch, Wood, a skeptic), structured, source-tagged, no buy/sell, plus a synthesis brief audited by an evaluator (#27, #28). D8 still holds for ai-hedge-fund itself: its code is not integrated, and its prompts may inform ours with MIT attribution.
+
+## D10 — No LLM price targets or buy/sell calls (2026-11-20)
+Valuation context (#29) and decision categories (#32) are deterministic, and the rules are written by the user; LLM layers explain them and never decide.
+
+## D11 — No macro forecasts or news-sentiment signals (2026-11-20)
+Macro enters as structural exposures (#25), and current events only as cited thesis-risk flags for final candidates (#31). Neither ever changes a verdict.
