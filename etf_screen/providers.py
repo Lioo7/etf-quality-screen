@@ -466,6 +466,8 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     sbc = sbc_raw if sbc_found else 0.0
     if sbc_assumed_zero:
         low_conf.append("SBC not reported by source - assumed 0")
+    elif _sbc_row_absent(a_cf):
+        low_conf.append("annual SBC not reported by source - assumed 0 in history")
 
     # Net income gates routing -> source it on the SAME basis as revenue, and
     # raise rather than default if Yahoo doesn't expose the line.
@@ -692,6 +694,15 @@ def _labeled_row(df, labels) -> dict:
     return {}
 
 
+def _sbc_row_absent(a_cf) -> bool:
+    """True when the cash-flow frame has no finite SBC value in any year.
+
+    A missing row and an all-NaN row both count (parity with the snapshot path,
+    where ``_row`` drops NaNs). A row with some finite years is NOT absent.
+    """
+    return a_cf is not None and not _labeled_row(a_cf, _SBC)
+
+
 def _fiscal_label(col) -> str:
     """Human-readable year label for a period-end column (a Timestamp or string)."""
     year = getattr(col, "year", None)
@@ -706,7 +717,11 @@ def _annual_history(a_inc, a_cf, a_bal=None) -> list:
     years (e.g. cash flow not yet filed) are skipped, then the run starts at the
     most recent complete year and TRUNCATES at the first backward gap. A skipped
     middle year would misalign growth, so we stop rather than skip. Lines are
-    never fabricated or zero-filled — a missing line just ends the history.
+    never fabricated or zero-filled — a missing line just ends the history. The one
+    sanctioned exception is SBC: a cash-flow frame with no finite SBC value in any
+    year (row missing or all NaN) means the company doesn't report it (sbc=0, as in
+    the snapshot path); a row with some finite years that is NaN in one year is
+    still a gap.
 
     Operating income, net income, COGS (income frame) and total debt / cash /
     total equity (balance-sheet frame, when supplied) are looked up per year on a
@@ -720,6 +735,7 @@ def _annual_history(a_inc, a_cf, a_bal=None) -> list:
     ocf = _labeled_row(a_cf, _OCF)
     capex = _labeled_row(a_cf, _CAPEX)
     sbc = _labeled_row(a_cf, _SBC)
+    sbc_absent = _sbc_row_absent(a_cf)
     net_income = _labeled_row(a_inc, _NET_INCOME)
     operating_income = _labeled_row(a_inc, _EBIT)
     cogs = _labeled_row(a_inc, _COGS)
@@ -730,13 +746,13 @@ def _annual_history(a_inc, a_cf, a_bal=None) -> list:
     periods: list[AnnualPeriod] = []
     started = False
     for col in cols:
-        complete = col in rev and col in ocf and col in capex and col in sbc
+        complete = col in rev and col in ocf and col in capex and (col in sbc or sbc_absent)
         if complete:
             started = True
             periods.append(AnnualPeriod(
                 fiscal_label=_fiscal_label(col),
                 revenue=rev[col], ocf=ocf[col],
-                capex=abs(capex[col]), sbc=sbc[col],
+                capex=abs(capex[col]), sbc=sbc.get(col, 0.0),
                 operating_income=operating_income.get(col),
                 total_debt=total_debt.get(col),
                 cash_and_equivalents=cash.get(col),
@@ -885,6 +901,8 @@ class FMPProvider(DataProvider):
         # bal_a additionally feeds the advisory ROIC-history annotation.
         inc_a = self._get(f"income-statement/{ticker}", period="annual", limit=10)
         cf_a = self._get(f"cash-flow-statement/{ticker}", period="annual", limit=10)
+        if sbc_found and not any(q.get("stockBasedCompensation") is not None for q in cf_a):
+            low_conf.append("annual SBC not reported by source - assumed 0 in history")
         bal_a = self._get(f"balance-sheet-statement/{ticker}", period="annual", limit=10)
 
         return Company(
@@ -921,6 +939,8 @@ def _fmp_annual_history(
     """
     cf_by_year = {q.get("calendarYear"): q for q in cf_a}
     bal_by_year = {b.get("calendarYear"): b for b in (bal_a or [])}
+    # No year reports SBC at all -> not reported by the company: 0 (snapshot parity).
+    sbc_absent = not any(q.get("stockBasedCompensation") is not None for q in cf_a)
     periods: list[AnnualPeriod] = []
     started = False
     for q in inc_a:  # FMP returns most-recent first
@@ -931,7 +951,7 @@ def _fmp_annual_history(
             cq is not None and rev is not None
             and cq.get("operatingCashFlow") is not None
             and cq.get("capitalExpenditure") is not None
-            and cq.get("stockBasedCompensation") is not None
+            and (sbc_absent or cq.get("stockBasedCompensation") is not None)
         )
         if complete:
             started = True
@@ -941,7 +961,7 @@ def _fmp_annual_history(
                 revenue=float(rev),
                 ocf=float(cq["operatingCashFlow"]),
                 capex=abs(float(cq["capitalExpenditure"])),
-                sbc=float(cq["stockBasedCompensation"]),
+                sbc=float(cq.get("stockBasedCompensation") or 0.0),
                 operating_income=_fmp_num(q.get("operatingIncome")),
                 net_income=_fmp_num(q.get("netIncome")),
                 cogs=_fmp_num(q.get("costOfRevenue")),
