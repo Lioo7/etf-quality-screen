@@ -3,7 +3,9 @@
 Methodology and process decisions, with dates and reasons. The screening spec changes only through an entry here: a `spec-change` issue must update the tests that pin the old behavior and add or amend an entry in this file.
 
 ## D1 — PEG growth basis (2026-11-19)
-Growth uses one earnings basis and horizon on both sides of the PEG ratio (expected: analyst-consensus adjusted EPS, current fiscal year to next). `PEG_MAX` stays 2; verdict flips are accepted. Reason: the current growth mixes GAAP trailing EPS with an analyst forward estimate, which inflates growth and yields implausibly low PEGs (Nov-19 SPY median 0.52). The final definition is recorded here after the PEG research issue.
+Growth uses one earnings basis and horizon on both sides of the PEG ratio (expected: analyst-consensus adjusted EPS, current fiscal year to next). `PEG_MAX` stays 2; verdict flips are accepted. Reason: the current growth mixes GAAP trailing EPS with an analyst forward estimate, which inflates growth and yields implausibly low PEGs (Nov-19 SPY median 0.52).
+
+**Definition (#5, 2026-11-20):** `PEG = (price / EPS_FY1) / (100 × (EPS_FY1 / EPS_FY0 − 1))`, where EPS_FY0 and EPS_FY1 are the analyst consensus averages for the current and next fiscal year. Untestable (→ NEEDS_DATA path, never 0 or a guess) when either value is absent, either is ≤ 0, the estimate currency differs from the price currency (ASML, CCEP, FER), or price is absent. Growth ≤ 0 keeps PEG N/A until the open question in the investigation is decided. FMP uses the same two figures from `analyst-estimates`. On the Nov-19 data the median PEG moves 0.50 → 1.43 (QQQ) and 0.52 → 1.70 (SPY); flips: QQQ ASML (currency guard), SPY seven energy/refining names (negative FY1 consensus). Evidence: `docs/investigations/2026-11-peg-basis.md`. Implementation: #6.
 
 ## D2 — Balance-sheet financials are NOT_APPLICABLE (2026-11-19)
 Banks, insurers, brokers, asset managers and consumer lenders get `NOT_APPLICABLE`. Asset-light payment networks (V, MA) stay evaluable. Reason: for a balance-sheet business, operating cash flow includes loan and deposit flows, so FCF margin and Rule of 40 are not meaningful. A separate bank methodology is not planned; revisit only if one of these names is wanted for the satellite sleeve.
@@ -40,3 +42,6 @@ No market timing and no bull/bear regime calls. Momentum and relative strength (
 
 ## D13 — Forward-tracking cadence (2026-11-20)
 Screens run monthly (QQQ and SPY), by hand from a terminal via scripts/monthly_run.sh. Each run's snapshot is saved and never overwritten. Performance is computed on demand from price history; there is no daily process. Cloud schedulers aren't used (Yahoo limits cloud IPs, and a silent failure is worse than a reminder). Tracking counts from the first run after M1.
+
+## D14 — Universe scope (2026-11-20)
+Monthly runs cover the de-duplicated union of QQQ and SPY; S&P 400 mid caps run quarterly, after earnings seasons. Small caps and non-US direct listings stay out of the routine (data quality); they remain possible ad hoc via --holdings. Curated ADR lists run ad hoc.
