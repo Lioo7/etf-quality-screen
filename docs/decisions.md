@@ -37,3 +37,6 @@ Macro enters as structural exposures (#25), and current events only as cited the
 
 ## D12 — Buy and sell discipline (2026-11-20)
 No market timing and no bull/bear regime calls. Momentum and relative strength (#36) are informational context for staging entries. Selling is reviewed for the documented reasons (thesis wrong, company deteriorated, clearly better opportunity) through #32's review categories, never automated.
+
+## D13 — Forward-tracking cadence (2026-11-20)
+Screens run monthly (QQQ and SPY), by hand from a terminal via scripts/monthly_run.sh. Each run's snapshot is saved and never overwritten. Performance is computed on demand from price history; there is no daily process. Cloud schedulers aren't used (Yahoo limits cloud IPs, and a silent failure is worse than a reminder). Tracking counts from the first run after M1.
