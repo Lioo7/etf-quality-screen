@@ -36,8 +36,13 @@ ratios.
   comp (SBC is treated as a real economic cost). Margins use adjusted FCF.
 - **P/S** = market cap / TTM revenue. **SBC %** = SBC / revenue.
 - **Net dilution** = YoY change in diluted shares, %.
-- **PEG** = forward P/E ÷ forward EPS growth %. If GAAP-unprofitable (no forward
-  P/E), PEG is **N/A** — never coerced to a number.
+- **PEG** = forward P/E ÷ forward EPS growth %, both on one basis: analyst
+  consensus EPS for the current (FY0) and next (FY1) fiscal year, so
+  `PEG = (price / EPS_FY1) / (100 × (EPS_FY1 / EPS_FY0 − 1))`
+  ([D1](docs/decisions.md)). PEG is **untestable** (never coerced to a number)
+  when either estimate is missing or ≤ 0, the estimates are in another currency
+  than the price, or there is no price. Consensus growth ≤ 0 is a **failed** PEG,
+  not missing data. Fewer than 3 FY1 analysts adds a `low-confidence` note.
 
 **Four filters:** ① Rule of 40 (`growth% + adj FCF margin% ≥ 40`) · ② PEG ≤ 2.0
 (Track A only) · ③ P/S guardrail (`P/S ≤ 0.5 × growth%`) · ④ SBC ≤ 15% of revenue.
@@ -123,8 +128,10 @@ fix a shrinking company — it must re-qualify on quality first). `WATCHLIST`
 names are never in the shortlist.
 
 **Needs data — "PEG untestable" is not "PEG failed".** A profitable name must
-clear PEG on Track A, but some names simply carry no forward estimates —
-unsponsored ADRs are the classic case (Keyence/KYCCF in the live Japan run).
+clear PEG on Track A, but some names carry no usable consensus estimates —
+missing (unsponsored ADRs are the classic case: Keyence/KYCCF in the live Japan
+run), non-positive, or quoted in another currency than the price (ASML's EUR
+estimates against its USD listing; conversion is #46).
 Rejecting them would conflate a failed test with an unadministrable one, and
 no price movement can fix missing estimates. So a name whose **only** blocker
 is an uncomputable PEG — profitable, and every *testable* gate passing (P/S
@@ -133,14 +140,16 @@ candidate must clear; *insufficient* history is tolerated as one more missing-
 data condition, since unsponsored ADRs pair thin estimates with thin history,
 but a real consistency **failure** still rejects) — is classified
 `NEEDS_DATA`: its own report
-and export section, never in the shortlist, with the pointer that verified
-`forward_pe` / `forward_eps_growth` values in `overrides.json` complete the
+and export section, never in the shortlist, with the actual cause and the
+pointer that verified `forward_pe` (= price / FY1 consensus EPS) and
+`forward_eps_growth` (= 100 × (FY1 / FY0 − 1)) in `overrides.json` complete the
 screen — and, when the Yahoo market cap looks wrong (unsponsored OTC ADRs
 routinely do; Keyence/KYCCF showed P/S 0.1 against a mid-single-digit sales
 multiple on the listed line), a verified `market_cap` too. Completing PEG
 against a fictional cap would finish the screen against a fictional valuation.
 Boundaries: a *computable* failed PEG keeps its normal fate
-(`WATCHLIST`/`REJECTED`); a name that also fails P/S or any quality gate stays
+(`WATCHLIST`/`REJECTED`); consensus EPS growth ≤ 0 is a failed PEG and plain
+`REJECTED` (no price fixes shrinking earnings, so never `WATCHLIST`); a name that also fails P/S or any quality gate stays
 plain rejected — more estimate data could not have saved it; Track B is
 untouched (PEG is structurally N/A there). Five-letter OTC ADR tickers (ending
 in `Y` or `F`) also carry the informational `otc_adr_data_suspect` flag —
@@ -476,7 +485,10 @@ over:**
   0 when absent and flagged (`goodwill_assumed_zero` / `debt_assumed_zero`); a
   missing operating-income (EBIT) line just makes ROIC advisory rather than
   guessing it. If Yahoo exposes no balance sheet at all, the name is skipped.
-- Forward EPS growth is a rough Yahoo proxy, always flagged `low-confidence`.
+- PEG inputs come from Yahoo's `earnings_estimate` consensus table (`0y` /
+  `+1y` averages and currency), not `forwardPE` / `trailingEps`. The raw
+  `eps_fy0`, `eps_fy1`, `estimate_currency` and `fy1_analysts` are exported. A
+  failed estimates request leaves PEG untestable; it never skips the name.
 
 ### FMP (optional upgrade — requires a paid tier)
 

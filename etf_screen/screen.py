@@ -29,8 +29,10 @@ Verdict pipeline (``evaluate``), in order:
 3. A snapshot failer blocked only by valuation (P/S and/or a computable-but-failed PEG)
    has the same gates run on its would-be track: all clear -> ``WATCHLIST`` with
    ``_unlock_prices()`` buy triggers (requires a consistency PASS). A profitable failer
-   whose only blocker is an untestable PEG (no estimates, P/S passing) -> ``NEEDS_DATA``
-   with the overrides.json hint and no unlock price (tolerates INSUFFICIENT history, still
+   whose only blocker is an untestable PEG (estimates absent, non-positive or in another
+   currency; P/S passing) -> ``NEEDS_DATA`` with an overrides.json hint naming the cause
+   and no unlock price. Consensus EPS growth <= 0 is a FAILED PEG, never NEEDS_DATA or
+   WATCHLIST: no price or data fixes it (tolerates INSUFFICIENT history, still
    rejects on a consistency FAIL). Any gate fail -> plain REJECTED with valuation reasons
    only. Candidacies and the real track share the ONE ``_run_quality_gates`` closure;
    never re-assemble the gate set inline.
@@ -126,12 +128,34 @@ FINANCIAL_SECTOR_NOTE = (
     "analyze via sector-appropriate measures"
 )
 NEEDS_DATA_HINT = (
-    "PEG untestable: no forward estimates — supply forward_pe / "
-    "forward_eps_growth in overrides.json to complete the screen "
-    "(also a verified market_cap when the Yahoo cap looks wrong — "
-    "an uncorrected OTC/ADR cap would finish the screen against a "
+    "PEG untestable: {reason} — supply forward_pe (= price / FY1 consensus EPS) "
+    "and forward_eps_growth (= 100 x (FY1 / FY0 - 1)) in overrides.json to "
+    "complete the screen (also a verified market_cap when the Yahoo cap looks "
+    "wrong — an uncorrected OTC/ADR cap would finish the screen against a "
     "fictional valuation)"
 )
+
+
+def peg_untestable_reason(c: Company) -> str:
+    """Why PEG could not be administered, read from the raw consensus inputs."""
+    if c.eps_fy0 is None or c.eps_fy1 is None:
+        return "no consensus EPS estimates"
+    if c.eps_fy0 <= 0 or c.eps_fy1 <= 0:
+        return (f"non-positive consensus EPS (FY0 {c.eps_fy0:.2f}, "
+                f"FY1 {c.eps_fy1:.2f})")
+    # Both EPS are positive: the provider recorded the specific cause (currency
+    # mismatch, no price) as a "PEG untestable:" low-confidence note.
+    prefix = "PEG untestable: "
+    for note in c.low_confidence:
+        if note.startswith(prefix):
+            return note[len(prefix):]
+    ccy = f" (estimates in {c.estimate_currency})" if c.estimate_currency else ""
+    return f"forward P/E or growth unavailable{ccy}: no price, or price currency differs"
+
+
+def needs_data_hint(c: Company) -> str:
+    """The NEEDS_DATA reason: the actual cause plus the basis for override values."""
+    return NEEDS_DATA_HINT.format(reason=peg_untestable_reason(c))
 
 
 def is_otc_adr_ticker(ticker: str) -> bool:
@@ -220,8 +244,12 @@ class Company:
     diluted_shares_now: float   # current diluted share count
     diluted_shares_prior: float  # diluted share count one year earlier
     market_cap: float
-    forward_pe: float | None    # None when GAAP-unprofitable / no estimate
-    forward_eps_growth: float   # forward EPS growth, in %
+    # PEG inputs on ONE basis (D1): forward_pe = price / FY1 consensus EPS and
+    # forward_eps_growth = 100 x (FY1 / FY0 - 1). None = untestable (estimates
+    # absent, non-positive or in another currency than the price); a number
+    # <= 0 is real negative consensus growth, i.e. a FAILED PEG.
+    forward_pe: float | None
+    forward_eps_growth: float | None
     net_income_ttm: float       # trailing net income (same basis) — gates routing
 
     # Current-snapshot balance-sheet lines ($millions) for the balance-sheet gates.
@@ -261,6 +289,15 @@ class Company:
     ath_price: float | None = None       # all-time-high adjusted close
     price_3mo_ago: float | None = None   # adjusted close ~3 months back
     price_history_years: float | None = None  # span the ATH window actually covers
+    # Raw analyst-consensus inputs behind forward_pe / forward_eps_growth (D1):
+    # EPS averages for the current (FY0) and next (FY1) fiscal year, the currency
+    # the estimates are quoted in, and the FY1 analyst count. Informational — no
+    # gate reads them; the NEEDS_DATA hint uses them to name why PEG is
+    # untestable. None = unknown, never a fabricated value.
+    eps_fy0: float | None = None
+    eps_fy1: float | None = None
+    estimate_currency: str | None = None
+    fy1_analysts: int | None = None
     # Annual statement history (OLDEST -> NEWEST) for the multi-year consistency
     # gate. Empty when the data layer could not source a contiguous run.
     history: list[AnnualPeriod] = field(default_factory=list)
@@ -547,10 +584,13 @@ def evaluate(c: Company, consistency_years: int = 0,
     else:
         net_debt_to_fcf = net_debt / fcf
 
-    # PEG is genuinely N/A unless there is a forward P/E AND positive growth.
+    # PEG is TESTABLE when both inputs are known. Positive growth gives the ratio;
+    # growth <= 0 is a FAILED PEG (the ratio is undefined, so peg stays None, but
+    # the test was administered); unknown inputs leave it untestable.
+    peg_testable = c.forward_pe is not None and c.forward_eps_growth is not None
     peg = (
         c.forward_pe / c.forward_eps_growth
-        if (c.forward_pe is not None and c.forward_eps_growth > 0)
+        if peg_testable and c.forward_eps_growth > 0
         else None
     )
 
@@ -642,6 +682,7 @@ def evaluate(c: Company, consistency_years: int = 0,
         reasons = _rejection_reasons(
             gaap_profitable, pass_sbc, pass_rule40, pass_ps, quality_gate,
             sbc_pct, rule40, p_s, growth, peg,
+            c.forward_eps_growth if peg_testable else None,
         )
         # WATCHLIST candidacy: every quality gate passed and ONLY valuation
         # (P/S and/or a computable-but-failed PEG) blocked a track. The same
@@ -650,18 +691,21 @@ def evaluate(c: Company, consistency_years: int = 0,
         # (per the fixed architecture, a snapshot failer's hypothetical gates
         # are moot, so their outcomes are not attached or reported). A
         # profitable name whose PEG is N/A is NOT a candidate: no price fixes
-        # missing forward estimates, and Track B stays barred.
+        # missing forward estimates or negative consensus growth, and Track B
+        # stays barred.
         #
         # NEEDS_DATA candidacy: the disjoint sibling case — a profitable name
-        # whose ONLY blocker is an UNTESTABLE PEG (no forward estimates, e.g.
-        # an unsponsored ADR) while every testable gate passes, P/S included.
-        # A failed test rejects; an unadministrable one asks for data — the
-        # user can supply forward_pe / forward_eps_growth via overrides.json.
-        # Track B stays barred either way (never in the shortlist), and a name
-        # that ALSO fails P/S or any quality gate stays plain REJECTED: more
-        # estimate data could not have saved it.
+        # whose ONLY blocker is an UNTESTABLE PEG (estimates absent,
+        # non-positive or in another currency — e.g. an unsponsored ADR) while
+        # every testable gate passes, P/S included. A failed test rejects (so
+        # consensus growth <= 0 is REJECTED, not NEEDS_DATA); an
+        # unadministrable one asks for data — the user can supply forward_pe /
+        # forward_eps_growth via overrides.json. Track B stays barred either
+        # way (never in the shortlist), and a name that ALSO fails P/S or any
+        # quality gate stays plain REJECTED: more estimate data could not have
+        # saved it.
         eligible = (quality_a and peg is not None) or quality_b
-        needs_data_eligible = quality_a and peg is None and pass_ps
+        needs_data_eligible = quality_a and not peg_testable and pass_ps
         if eligible or needs_data_eligible:
             wl_bs_reasons, wl_consistency = _run_quality_gates(quality_a)
             hist_status = None if wl_consistency is None else wl_consistency.status
@@ -683,7 +727,7 @@ def evaluate(c: Company, consistency_years: int = 0,
                 margin_prof = margin_profile(c.history)
                 if needs_data_eligible:
                     status = ScreenStatus.NEEDS_DATA
-                    reasons = [NEEDS_DATA_HINT]
+                    reasons = [needs_data_hint(c)]
                 else:
                     status = ScreenStatus.WATCHLIST
                     unlock_ps_price, unlock_peg_price = _unlock_prices(
@@ -915,13 +959,14 @@ def _balance_sheet_reasons(
 def _rejection_reasons(
     gaap_profitable: bool, pass_sbc: bool, pass_rule40: bool, pass_ps: bool,
     quality_gate: bool, sbc_pct: float, rule40: float, p_s: float,
-    growth: float, peg: float | None,
+    growth: float, peg: float | None, eps_growth: float | None = None,
 ) -> list[str]:
     """Build a human-readable list of why a name was rejected.
 
     Branches on GAAP profitability — the routing key — not on whether PEG is
     computable: a profitable name lives or dies on Track A (PEG required), an
-    unprofitable one on the Track B quality gate.
+    unprofitable one on the Track B quality gate. ``eps_growth`` is the consensus
+    growth when PEG was testable (None when untestable).
     """
     reasons: list[str] = []
     if not pass_rule40:
@@ -934,9 +979,14 @@ def _rejection_reasons(
         reasons.append(f"SBC = {sbc_pct:.1f}% of revenue (> {SBC_MAX_PCT:.0f}%)")
     if gaap_profitable:
         # Profitable -> Track A only, so PEG must clear; Track B is barred.
-        if peg is None:
+        if eps_growth is not None and eps_growth <= 0:
             reasons.append(
-                "PEG not computable (no forward P/E or forward EPS growth <= 0); "
+                f"PEG failed: consensus EPS growth <= 0 ({eps_growth:.1f}%); "
+                "profitable, Track B barred"
+            )
+        elif peg is None:
+            reasons.append(
+                "PEG not computable (no usable consensus estimates); "
                 "profitable name must clear PEG, Track B barred"
             )
         elif peg > PEG_MAX:

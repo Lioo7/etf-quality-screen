@@ -38,8 +38,14 @@ _COMPANY_FIELDS = (
     "low_confidence", "name", "basis",
     "sbc_assumed_zero", "overridden_fields", "sector", "industry", "ipo_date",
     "current_price", "ath_price", "price_3mo_ago", "price_history_years",
+    "eps_fy0", "eps_fy1", "estimate_currency", "fy1_analysts",
     "history",
 )
+
+# Bumped when a cached field changes meaning, so a same-day entry written by older
+# code is refetched instead of misread. v2 (#6): forward_eps_growth None = missing
+# (the old 0.0 sentinel would now read as negative consensus growth -> REJECTED).
+_CACHE_SCHEMA = "v2"
 
 
 class DataUnavailable(Exception):
@@ -97,15 +103,18 @@ class DataProvider(ABC):
         Cache hits return immediately; only the uncached fetch is deadline-bound.
         """
         if self._cache is not None:
-            cached = self._cache.get(f"{self.name}_{ticker}")
+            cached = self._cache.get(self._cache_key(ticker))
             if cached is not None:
                 # Only pass keys present in the entry so older caches fall back
                 # to the dataclass defaults for newly added fields.
                 return Company(**{k: cached[k] for k in _COMPANY_FIELDS if k in cached})
         company = self._fetch_with_deadline(ticker)
         if self._cache is not None:
-            self._cache.set(f"{self.name}_{ticker}", asdict(company))
+            self._cache.set(self._cache_key(ticker), asdict(company))
         return company
+
+    def _cache_key(self, ticker: str) -> str:
+        return f"{self.name}_{_CACHE_SCHEMA}_{ticker}"
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +260,7 @@ class MockProvider(DataProvider):
         # forward estimates exist (unsponsored ADR) -> PEG is UNTESTABLE, not
         # failed -> NEEDS_DATA with the overrides.json hint (v0.2.1 Fix 3).
         "OPAQUE": Company("OPAQUE", 1000, 700, 400, 50, 50, 1000, 1000,
-                          5000, None, 0.0, 200,
+                          5000, None, None, 200,
                           total_debt=0, cash_and_equivalents=300, goodwill=0,
                           total_assets=1500, operating_income=200, total_equity=1000,
                           name="Opaque ADR Co.", basis="TTM",
@@ -353,8 +362,8 @@ class YFinanceProvider(DataProvider):
       retrieved but has no SBC line, SBC is treated as 0 and the name is flagged
       ``sbc_assumed_zero`` (utilities/staples genuinely report ~0). Only when the
       cash-flow statement cannot be retrieved at all is the name skipped.
-    * Forward EPS growth derived from Yahoo's ``forwardEps``/``trailingEps`` is a
-      rough proxy and is always flagged low-confidence.
+    * PEG inputs come from the ``earnings_estimate`` consensus table (D1). A failed
+      estimates request leaves PEG untestable (NEEDS_DATA path), never skips the name.
     """
 
     name = "yfinance"
@@ -389,6 +398,7 @@ class YFinanceProvider(DataProvider):
             a_cf=_df(tk, "cashflow", "cash_flow"),
             info=_info(tk),
             q_bal=q_bal, a_bal=a_bal, closes=closes,
+            estimates=_yf_estimates(tk),
         )
 
 
@@ -420,7 +430,7 @@ _COGS = ["Cost Of Revenue", "Reconciled Cost Of Revenue"]
 
 
 def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
-                q_bal=None, a_bal=None, closes=None) -> Company:
+                q_bal=None, a_bal=None, closes=None, estimates=None) -> Company:
     """Build a Company from Yahoo statement frames, on a single consistent basis.
 
     Factored out of the provider (no network here) so the basis-selection and
@@ -522,13 +532,14 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     if not market_cap:
         raise DataUnavailable(f"{ticker}: no market cap from yfinance")
 
-    forward_pe = info.get("forwardPE")
-    fwd_eps, ttm_eps = info.get("forwardEps"), info.get("trailingEps")
-    if fwd_eps and ttm_eps and ttm_eps > 0:
-        forward_eps_growth = (fwd_eps / ttm_eps - 1) * 100
-    else:
-        forward_eps_growth = 0.0
-    low_conf.append("forward EPS growth is a rough Yahoo proxy")
+    # PEG inputs on ONE basis (D1): both EPS figures from the consensus table,
+    # P/E on the same FY1 figure. forwardPE / forwardEps / trailingEps are not
+    # read: they mix GAAP trailing EPS with an estimate on another basis.
+    eps_fy0, eps_fy1, est_ccy, fy1_analysts = _yf_consensus(estimates)
+    price = _pos_num(info.get("currentPrice")) or _pos_num(info.get("regularMarketPrice"))
+    forward_pe, forward_eps_growth, peg_notes = _consensus_peg_inputs(
+        price, info.get("currency"), eps_fy0, eps_fy1, est_ccy, fy1_analysts)
+    low_conf.extend(peg_notes)
 
     # Operating income (EBIT) for ROIC, on the SAME basis as revenue. Absent ->
     # NaN so ROIC is treated as not-computable (advisory), never a false reject.
@@ -592,7 +603,7 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
         ocf_ttm=ocf, capex_ttm=capex, sbc_ttm=sbc,
         diluted_shares_now=shares_now, diluted_shares_prior=shares_prior,
         market_cap=float(market_cap),
-        forward_pe=float(forward_pe) if forward_pe else None,
+        forward_pe=forward_pe,
         forward_eps_growth=forward_eps_growth, net_income_ttm=net_income_ttm,
         total_debt=float(total_debt), cash_and_equivalents=float(cash),
         goodwill=float(goodwill), total_assets=float(total_assets),
@@ -603,6 +614,8 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
         sector=sector, industry=industry, ipo_date=ipo_date,
         current_price=current_price, ath_price=ath_price,
         price_3mo_ago=price_3mo_ago, price_history_years=price_history_years,
+        eps_fy0=eps_fy0, eps_fy1=eps_fy1, estimate_currency=est_ccy,
+        fy1_analysts=fy1_analysts,
         history=_annual_history(a_inc, a_cf, a_bal),
     )
 
@@ -804,6 +817,81 @@ def _annual_history(a_inc, a_cf, a_bal=None) -> list:
     return periods
 
 
+def _yf_estimates(tk):
+    """The consensus ``earnings_estimate`` table, or None when the request fails.
+
+    PEG inputs are optional for a name: a failed request makes PEG untestable
+    (NEEDS_DATA path), it never skips the name as "could not source".
+    """
+    try:
+        df = tk.earnings_estimate
+    except Exception:
+        return None
+    return df if df is not None and getattr(df, "empty", True) is False else None
+
+
+def _pos_num(v) -> float | None:
+    """``float(v)`` when it is a finite number, else None (NaN/None/garbage -> None)."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f
+
+
+def _yf_consensus(estimates):
+    """``(eps_fy0, eps_fy1, currency, fy1_analysts)`` from Yahoo's estimate table.
+
+    Rows ``0y`` / ``+1y`` are the current and next fiscal year; ``avg`` is the
+    consensus EPS. Absent rows or NaN cells come back as None, never 0.
+    """
+    if estimates is None:
+        return None, None, None, None
+
+    def cell(row, col):
+        try:
+            return estimates.loc[row, col]
+        except (KeyError, IndexError):
+            return None
+
+    n = _pos_num(cell("+1y", "numberOfAnalysts"))
+    ccy = cell("+1y", "currency") or cell("0y", "currency")
+    return (_pos_num(cell("0y", "avg")), _pos_num(cell("+1y", "avg")),
+            ccy if isinstance(ccy, str) and ccy else None,
+            int(n) if n is not None else None)
+
+
+#: Fewer FY1 analysts than this -> a low_confidence note (never a gate).
+MIN_FY1_ANALYSTS = 3
+
+
+def _consensus_peg_inputs(price, price_ccy, eps_fy0, eps_fy1, est_ccy, fy1_analysts):
+    """``(forward_pe, forward_eps_growth, notes)`` on one basis (D1, shared by providers).
+
+    ``forward_pe = price / EPS_FY1`` and ``growth = 100 x (EPS_FY1 / EPS_FY0 - 1)``.
+    Untestable -> ``(None, None)`` with a note when either EPS is absent or <= 0,
+    the estimate currency differs from the price currency, or price is absent.
+    Growth <= 0 on two positive EPS values is returned as is: a failed PEG, not
+    missing data. An unknown currency computes with a note; few analysts is a note.
+    """
+    if eps_fy0 is None or eps_fy1 is None:
+        return None, None, ["PEG untestable: consensus EPS estimates unavailable"]
+    if eps_fy0 <= 0 or eps_fy1 <= 0:
+        return None, None, [f"PEG untestable: non-positive consensus EPS "
+                            f"(FY0 {eps_fy0:.2f}, FY1 {eps_fy1:.2f})"]
+    notes: list[str] = []
+    if est_ccy is None or price_ccy is None:
+        notes.append("estimate currency unverified")
+    elif est_ccy != price_ccy:
+        return None, None, [f"PEG untestable: consensus EPS in {est_ccy}, "
+                            f"price in {price_ccy}"]
+    if price is None or price <= 0:
+        return None, None, ["PEG untestable: no price for the forward P/E"]
+    if fy1_analysts is not None and fy1_analysts < MIN_FY1_ANALYSTS:
+        notes.append(f"only {fy1_analysts} FY1 analysts - PEG estimate thin")
+    return price / eps_fy1, 100 * (eps_fy1 / eps_fy0 - 1), notes
+
+
 def _info(tk) -> dict:
     try:
         return tk.info or {}
@@ -881,31 +969,24 @@ class FMPProvider(DataProvider):
 
         quote = self._get(f"quote/{ticker}")[0]
         market_cap = quote["marketCap"]
-        price, ttm_eps = quote.get("price"), quote.get("eps")
+        price = _pos_num(quote.get("price"))
         name = quote.get("name") or ticker
 
         # Sector/industry/IPO date from the company profile (informational only).
-        sector, industry, ipo_date = "Unknown", "", None
+        sector, industry, ipo_date, price_ccy = "Unknown", "", None, None
         try:
             profile = self._get(f"profile/{ticker}")
             if profile:
                 sector = profile[0].get("sector") or "Unknown"
                 industry = profile[0].get("industry") or ""
                 ipo_date = profile[0].get("ipoDate") or None
+                price_ccy = profile[0].get("currency") or None
         except DataUnavailable:
             pass  # profile is optional context; never block a name on it
         if sector == "Unknown":
             low_conf.append("sector not reported by source")
         if ipo_date is None:
             low_conf.append("first trading date unknown - IPO seasoning not checked")
-
-        forward_pe, forward_eps_growth = None, 0.0
-        est = self._get(f"analyst-estimates/{ticker}", period="annual")
-        fwd_eps = _nearest_future_eps(est)
-        if fwd_eps and price:
-            forward_pe = price / fwd_eps
-            if ttm_eps and ttm_eps > 0:
-                forward_eps_growth = (fwd_eps / ttm_eps - 1) * 100
 
         # Balance-sheet snapshot for the balance-sheet gates. Cash / total assets /
         # total equity are REQUIRED; goodwill and total debt are assumed-zero.
@@ -943,6 +1024,25 @@ class FMPProvider(DataProvider):
             low_conf.append("annual SBC not reported by source - assumed 0 in history")
         bal_a = self._get(f"balance-sheet-statement/{ticker}", period="annual", limit=10)
 
+        # PEG inputs on ONE basis (D1): the current- and next-FY consensus rows.
+        # FMP estimate rows carry no currency; they are taken to be in the
+        # statements' reportedCurrency, compared with the profile's trading currency.
+        try:
+            est = self._get(f"analyst-estimates/{ticker}", period="annual")
+        except Exception:  # 403 on the tier, HTTP/JSON error: PEG untestable, not skipped
+            est = []
+        last_fy_end = inc_a[0].get("date") if inc_a else None
+        eps_fy0, eps_fy1, fy1_analysts, shifted = _fmp_fy_pair(
+            est, date.today().isoformat(), last_fy_end)
+        if shifted:
+            low_conf.append("FY0 shifted: the fiscal year just ended is not yet "
+                            "reported, so FY0/FY1 are one year ahead")
+        est_ccy = next((r.get("reportedCurrency") for r in inc + inc_a
+                        if r.get("reportedCurrency")), None)
+        forward_pe, forward_eps_growth, peg_notes = _consensus_peg_inputs(
+            price, price_ccy, eps_fy0, eps_fy1, est_ccy, fy1_analysts)
+        low_conf.extend(peg_notes)
+
         return Company(
             ticker=ticker, revenue_ttm=revenue_ttm, revenue_ttm_prior=revenue_prior,
             ocf_ttm=ocf, capex_ttm=capex, sbc_ttm=sbc,
@@ -956,6 +1056,8 @@ class FMPProvider(DataProvider):
             low_confidence=low_conf,
             name=name, basis="TTM", sbc_assumed_zero=not sbc_found,
             sector=sector, industry=industry, ipo_date=ipo_date,
+            eps_fy0=eps_fy0, eps_fy1=eps_fy1, estimate_currency=est_ccy,
+            fy1_analysts=fy1_analysts,
             history=_fmp_annual_history(inc_a, cf_a, bal_a),
         )
 
@@ -1018,16 +1120,31 @@ def _fmp_num(v) -> float | None:
     return None if v is None else float(v)
 
 
-def _nearest_future_eps(estimates: list[dict]) -> float | None:
-    """Pick the nearest future-dated ``estimatedEpsAvg`` from FMP estimates."""
-    from datetime import date
+def _days_between(earlier: str, later: str) -> int:
+    return (date.fromisoformat(later[:10]) - date.fromisoformat(earlier[:10])).days
 
-    today = date.today().isoformat()
-    future = [e for e in estimates if e.get("date", "") >= today and e.get("estimatedEpsAvg")]
-    if not future:
-        return None
-    nearest = min(future, key=lambda e: e["date"])
-    return nearest["estimatedEpsAvg"]
+
+def _fmp_fy_pair(estimates: list[dict], today: str, last_reported_fy_end: str | None):
+    """``(eps_fy0, eps_fy1, fy1_analysts, shifted)`` from FMP annual estimates.
+
+    FY0 is the first annual row dated on/after ``today`` (the fiscal year in
+    progress), FY1 the next one. ``shifted`` is True when a fiscal year has ended
+    but is not yet reported (a past-dated row newer than ``last_reported_fy_end``):
+    then the pair sits one year ahead of the consensus "current" year. Absent
+    values are None, never 0.
+    """
+    rows = sorted((e for e in estimates or [] if e.get("date")), key=lambda e: e["date"])
+    future = [e for e in rows if e["date"] >= today]
+    past = [e for e in rows if e["date"] < today]
+    # 52/53-week years put the estimate and statement dates of one fiscal year a few
+    # days apart, so "newer" means more than ~60 days after the last reported year end.
+    shifted = bool(past and last_reported_fy_end
+                   and _days_between(last_reported_fy_end, past[-1]["date"]) > 60)
+    fy0 = _pos_num(future[0].get("estimatedEpsAvg")) if future else None
+    fy1_row = future[1] if len(future) > 1 else None
+    fy1 = _pos_num(fy1_row.get("estimatedEpsAvg")) if fy1_row else None
+    n = _pos_num(fy1_row.get("numberAnalystsEstimatedEps")) if fy1_row else None
+    return fy0, fy1, int(n) if n is not None else None, shifted
 
 
 PROVIDERS = {

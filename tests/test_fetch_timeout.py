@@ -52,9 +52,10 @@ def test_cached_ticker_skips_the_deadline(tmp_path, monkeypatch):
     cache = DiskCache("hanging")
     entry = asdict(MockProvider().fetch("MSFT"))
     entry["ticker"] = "HANG"
-    cache.set("hanging_HANG", entry)
+    provider = HangingProvider(cache=cache, fetch_timeout=0.01)
+    cache.set(provider._cache_key("HANG"), entry)
     # A cache hit never reaches the (hanging) network path, even at a tiny deadline.
-    assert HangingProvider(cache=cache, fetch_timeout=0.01).fetch("HANG").ticker == "HANG"
+    assert provider.fetch("HANG").ticker == "HANG"
 
 
 def test_run_reports_timeout_and_continues(monkeypatch, capsys):

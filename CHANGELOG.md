@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **PEG on one basis (#6, D1).** Growth no longer divides an analyst forward
+  EPS by GAAP trailing EPS. Both providers now use the consensus EPS for the
+  current and next fiscal year:
+  `PEG = (price / EPS_FY1) / (100 × (EPS_FY1 / EPS_FY0 − 1))`. Missing,
+  non-positive or other-currency estimates make PEG untestable (`NEEDS_DATA`
+  path); consensus growth ≤ 0 is now a failed PEG (`REJECTED`, never
+  `NEEDS_DATA` or `WATCHLIST`). `PEG_MAX` stays 2.
+- New informational fields `eps_fy0`, `eps_fy1`, `estimate_currency`,
+  `fy1_analysts` (cached, overridable, exported). The `NEEDS_DATA` hint names
+  the cause and the basis for override values.
+- `forward_eps_growth` is `None` when unknown (was a `0.0` sentinel); the cache
+  key is versioned so same-day entries from older code are refetched.
+
 ## v0.2.1 — 2026-07-10
 
 Live-fire fixes from the first real v0.2 runs (QQQ / Israel-tech /
