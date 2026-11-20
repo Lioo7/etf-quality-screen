@@ -655,3 +655,7 @@ flake8 etf_screen tests
 The acceptance fixtures in `tests/test_screen.py` lock in the validated
 behavior — especially the `PriceyButProfitable` rejection that keeps the PEG
 filter from being toothless.
+
+## License
+
+MIT, see [LICENSE](LICENSE).

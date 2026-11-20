@@ -21,14 +21,16 @@ manually by the user.
 ## Milestones (order and commands: docs/queue.md)
 
 - **M1 data correctness:** SBC history (#4), fetch timeout (#7), PEG basis (#5 -> #6),
-  fresh universes (#8), NOT_APPLICABLE for balance-sheet financials (#9).
+  fresh universes (#8), NOT_APPLICABLE for balance-sheet financials (#9), EPS one-off
+  flag (#53).
 - **M2 harness and CI:** harness (#10), CI (#11), README (#12), data-health summary (#13),
   /review-run (#14), property tests (#24), external review packet (#33).
 - **M3 decision support:** CYCLICAL flag (#15), valuation context (#29), decision rules incl.
   sell-review categories and a decision journal (#32), run snapshots and diff (#16),
   forward scorecard vs QQQ (#21), held names (#22), drawdowns and units (#17), relative
   strength (#36), gross profitability (#37), P/S guardrail research (#20), EDGAR
-  cross-check research (#23).
+  cross-check research (#23), EDGAR event feed (#51), ownership context (#52),
+  point-in-time fundamentals (#54) and the drawdown-recovery study (#55).
 - **M4 AI layer:** grounded memo and evaluator (#18), LLM judge with a hand-labeled set and
   the blind-vs-named experiment (#30), context check with structural exposures (#25),
   thesis-risk events from 8-Ks and headlines (#31), filing evidence pack (#35), investor
