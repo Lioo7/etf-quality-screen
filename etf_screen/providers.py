@@ -19,6 +19,7 @@ the acceptance fixtures; ``YFinanceProvider``/``FMPProvider`` return raw values.
 from __future__ import annotations
 
 import os
+import threading
 from abc import ABC, abstractmethod
 from dataclasses import asdict
 from datetime import date, timedelta
@@ -45,27 +46,63 @@ class DataUnavailable(Exception):
     """Raised when a required fundamental cannot be sourced for a ticker."""
 
 
+DEFAULT_FETCH_TIMEOUT = 60.0  # seconds per uncached ticker fetch (--fetch-timeout)
+
+
 class DataProvider(ABC):
     """Abstract base for all data sources."""
 
     name: str = "abstract"
 
-    def __init__(self, cache: DiskCache | None = None):
+    def __init__(self, cache: DiskCache | None = None,
+                 fetch_timeout: float = DEFAULT_FETCH_TIMEOUT):
         self._cache = cache
+        self.fetch_timeout = fetch_timeout  # <= 0 disables the deadline
 
     @abstractmethod
     def _fetch_uncached(self, ticker: str) -> Company:
         """Fetch raw fundamentals for ``ticker`` or raise :class:`DataUnavailable`."""
 
+    def _fetch_with_deadline(self, ticker: str) -> Company:
+        """Run ``_fetch_uncached`` under a wall-clock deadline.
+
+        yfinance statement properties take no timeout, so one stuck Yahoo call
+        could stall a whole run. The fetch runs on a *daemon* thread: on timeout
+        it is abandoned (Python cannot kill a thread) and, being a daemon, it never
+        blocks interpreter exit, unlike ``concurrent.futures`` workers, which are
+        joined at exit.
+        """
+        if not self.fetch_timeout or self.fetch_timeout <= 0:
+            return self._fetch_uncached(ticker)
+        outcome: dict = {}
+
+        def work() -> None:
+            try:
+                outcome["company"] = self._fetch_uncached(ticker)
+            except BaseException as exc:  # re-raised on the caller's thread
+                outcome["error"] = exc
+
+        worker = threading.Thread(target=work, name=f"fetch-{ticker}", daemon=True)
+        worker.start()
+        worker.join(self.fetch_timeout)
+        if worker.is_alive():
+            raise DataUnavailable(f"timed out after {self.fetch_timeout:g} s")
+        if "error" in outcome:
+            raise outcome["error"]
+        return outcome["company"]
+
     def fetch(self, ticker: str) -> Company:
-        """Return a Company for ``ticker``, using the disk cache when available."""
+        """Return a Company for ``ticker``, using the disk cache when available.
+
+        Cache hits return immediately; only the uncached fetch is deadline-bound.
+        """
         if self._cache is not None:
             cached = self._cache.get(f"{self.name}_{ticker}")
             if cached is not None:
                 # Only pass keys present in the entry so older caches fall back
                 # to the dataclass defaults for newly added fields.
                 return Company(**{k: cached[k] for k in _COMPANY_FIELDS if k in cached})
-        company = self._fetch_uncached(ticker)
+        company = self._fetch_with_deadline(ticker)
         if self._cache is not None:
             self._cache.set(f"{self.name}_{ticker}", asdict(company))
         return company
@@ -789,8 +826,9 @@ class FMPProvider(DataProvider):
     name = "fmp"
     BASE = "https://financialmodelingprep.com/api/v3"
 
-    def __init__(self, api_key: str | None = None, cache: DiskCache | None = None):
-        super().__init__(cache)
+    def __init__(self, api_key: str | None = None, cache: DiskCache | None = None,
+                 fetch_timeout: float = DEFAULT_FETCH_TIMEOUT):
+        super().__init__(cache, fetch_timeout)
         self.api_key = api_key or os.environ.get("FMP_API_KEY")
         if not self.api_key:
             raise DataUnavailable(

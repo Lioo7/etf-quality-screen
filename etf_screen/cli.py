@@ -24,7 +24,7 @@ from . import __version__, export as export_mod
 from .cache import DiskCache
 from .constituents import holdings_from_csv, resolve, tickers_from_file
 from .overrides import apply_override, company_from_override, load_overrides
-from .providers import PROVIDERS, DataProvider, DataUnavailable
+from .providers import DEFAULT_FETCH_TIMEOUT, PROVIDERS, DataProvider, DataUnavailable
 from .screen import Result, ScreenStatus, annotate_sector_context, evaluate, rank
 
 
@@ -59,6 +59,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="disable the per-day disk cache entirely")
     p.add_argument("--throttle", type=float, default=0.0,
                    help="seconds to sleep between fetches (rate-limit courtesy)")
+    p.add_argument("--fetch-timeout", type=float, default=DEFAULT_FETCH_TIMEOUT,
+                   help="wall-clock seconds allowed per uncached ticker fetch; a hung "
+                        "call is reported under 'could not source' (default: "
+                        f"{DEFAULT_FETCH_TIMEOUT:g}; 0 disables)")
     p.add_argument("--overrides", default="overrides.json",
                    help="path to a git-ignored overrides.json (default: overrides.json)")
     p.add_argument("--export", choices=("csv", "md"), default=None,
@@ -110,7 +114,7 @@ def _make_provider(args) -> DataProvider:
     cache = None if args.no_cache else DiskCache(
         args.provider, enabled=True, refresh=args.refresh)
     try:
-        return PROVIDERS[args.provider](cache=cache)
+        return PROVIDERS[args.provider](cache=cache, fetch_timeout=args.fetch_timeout)
     except DataUnavailable as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(2)
