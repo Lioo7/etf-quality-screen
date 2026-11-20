@@ -42,3 +42,6 @@ No market timing and no bull/bear regime calls. Momentum and relative strength (
 
 ## D13 — Forward-tracking cadence (2026-11-20)
 Screens run monthly (QQQ and SPY), by hand from a terminal via scripts/monthly_run.sh. Each run's snapshot is saved and never overwritten. Performance is computed on demand from price history; there is no daily process. Cloud schedulers aren't used (Yahoo limits cloud IPs, and a silent failure is worse than a reminder). Tracking counts from the first run after M1.
+
+## D14 — Universe scope (2026-11-20)
+Monthly runs cover the de-duplicated union of QQQ and SPY; S&P 400 mid caps run quarterly, after earnings seasons. Small caps and non-US direct listings stay out of the routine (data quality); they remain possible ad hoc via --holdings. Curated ADR lists run ad hoc.
