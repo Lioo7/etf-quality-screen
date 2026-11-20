@@ -20,3 +20,6 @@ holdings/*.csv
 # Decision journal: template is committed, entries stay local
 journal/*
 !journal/TEMPLATE.md
+
+# Research scratch scripts and dumps (issue scope: never committed)
+scratch/
