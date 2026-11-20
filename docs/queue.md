@@ -15,16 +15,16 @@ build = /issue-build N
 | 6 | #20 | build | #6 |
 | 7 | #8 | plan+build |  |
 | 8 | #9 | plan+build |  |
-| 9 | #13 | issue |  |
-| 10 | #14 | issue | #13 |
-| 11 | #11 | issue |  |
-| 12 | #12 | issue | #11 |
-| 13 | #33 | issue | #6, #9, #13 |
-| 14 | #24 | issue |  |
-| 15 | #15 | plan+build |  |
-| 16 | #29 | plan+build |  |
-| 17 | #32 | plan+build | #29, #9, #15 |
-| 18 | #16 | plan+build |  |
+| 9 | #16 | plan+build |  |
+| 10 | #13 | issue |  |
+| 11 | #14 | issue | #13 |
+| 12 | #11 | issue |  |
+| 13 | #12 | issue | #11 |
+| 14 | #33 | issue | #6, #9, #13 |
+| 15 | #24 | issue |  |
+| 16 | #15 | plan+build |  |
+| 17 | #29 | plan+build |  |
+| 18 | #32 | plan+build | #29, #9, #15 |
 | 19 | #21 | issue | #16 |
 | 20 | #22 | issue | #16 |
 | 21 | #17 | issue |  |

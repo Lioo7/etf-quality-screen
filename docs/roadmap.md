@@ -34,6 +34,13 @@ manually by the user.
   thesis-risk events from 8-Ks and headlines (#31), filing evidence pack (#35), investor
   lenses (#27), synthesis brief (#28).
 
+## Forward tracking
+
+Monthly runs (D13) save snapshots (#16). The scorecard (#21) measures each run's cohort
+from the first trading day after the run date against the universe ETF and against the rest
+of the same universe; held names get status-change alerts (#22). Evidence needs roughly
+a year of monthly cohorts.
+
 ## Planned LLM pipeline (M4)
 
 Screen rows (PASS, WATCHLIST, held names) feed:
