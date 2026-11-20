@@ -24,7 +24,7 @@ RUN_LIVE_TESTS=1 .venv/bin/python -m pytest tests/test_live_yfinance.py -q  # li
 
 ## Backlog
 
-GitHub Issues. Run `gh issue list` before new work; one issue per session. Reference issues in commits (`closes #N`, `refs #N`). Format: `.github/ISSUE_TEMPLATE/task.md`. Decisions and reasons: `docs/decisions.md`; a `spec-change` issue adds an entry there. No personal portfolio details in issues (public repo). Order and command per issue: docs/queue.md; every new issue gets a row there in the same change. `/next` shows what to run.
+GitHub Issues. Run `gh issue list` before new work; one issue per session. Reference issues in commits (`closes #N`, `refs #N`). Format: `.github/ISSUE_TEMPLATE/task.md`. Decisions and reasons: `docs/decisions.md`; a `spec-change` issue adds an entry there. No personal portfolio details in issues (public repo). Order and command per issue: docs/queue.md; every new issue gets a row there in the same change. `/next` shows what to run. Design and milestones: docs/roadmap.md. Evidence behind methodology: docs/research-basis.md. A decision that changes either updates it in the same change.
 
 ## Architecture
 
