@@ -25,7 +25,9 @@ from .cache import DiskCache
 from .constituents import holdings_from_csv, resolve, tickers_from_file
 from .overrides import apply_override, company_from_override, load_overrides
 from .providers import DEFAULT_FETCH_TIMEOUT, PROVIDERS, DataProvider, DataUnavailable
-from .screen import Result, ScreenStatus, annotate_sector_context, evaluate, rank
+from .screen import (
+    Result, ScreenStatus, annotate_sector_context, evaluate, peg_untestable_reason, rank,
+)
 
 
 @dataclass
@@ -254,7 +256,12 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
     print(f"    Rule of 40    : {sum(1 for r in rejected if not r.pass_rule40)}")
     print(f"    P/S guardrail : {sum(1 for r in rejected if not r.pass_ps)}")
     print(f"    SBC > 15%     : {sum(1 for r in rejected if not r.pass_sbc)}")
-    print(f"    PEG (Track A) : {sum(1 for r in rejected if r.peg is not None and not r.pass_peg)}")
+    # PEG administered and failed: ratio > 2, or consensus EPS growth <= 0 (peg None).
+    peg_failed = sum(1 for r in rejected if not r.pass_peg
+                     and r.company.net_income_ttm > 0
+                     and r.company.forward_pe is not None
+                     and r.company.forward_eps_growth is not None)
+    print(f"    PEG (Track A) : {peg_failed}")
 
     # --- ranked survivor table ---
     rank_label = ("Rule of 40" if args.rank == "rule40"
@@ -303,16 +310,19 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
     # --- needs data: every testable gate passed, PEG had no estimates to test ---
     if needs_data:
         print(f"\nNEEDS_DATA ({len(needs_data)}) — every testable gate passed but PEG "
-              f"had no forward estimates to test (common for unsponsored ADRs). Not "
-              f"in the shortlist; verify estimates yourself and supply forward_pe / "
-              f"forward_eps_growth in overrides.json to complete the screen "
+              f"had no usable consensus estimates to test (missing, non-positive or "
+              f"in another currency; common for unsponsored ADRs). Not in the "
+              f"shortlist; verify estimates yourself and supply forward_pe "
+              f"(= price / FY1 consensus EPS) and forward_eps_growth "
+              f"(= 100 x (FY1 / FY0 - 1)) in overrides.json to complete the screen "
               f"(also a verified market_cap when the Yahoo cap looks wrong — an "
               f"uncorrected OTC/ADR cap would finish the screen against a fictional "
               f"valuation):")
         for r in needs_data:
             print(f"  {r.ticker} ({_short(r.name)}): Rule40 {_f(r.rule40)}, "
                   f"P/S {_f(r.p_s, 1)} vs guardrail {_f(r.ps_guardrail, 1)}, "
-                  f"SBC {_f(r.sbc_pct)}%{_flags(r)}")
+                  f"SBC {_f(r.sbc_pct)}%; {peg_untestable_reason(r.company)}"
+                  f"{_flags(r)}")
 
     if rejected:
         print("\nWhy names were rejected:")

@@ -9,7 +9,7 @@ import math
 
 import pytest
 
-from etf_screen.screen import Company, evaluate, rank
+from etf_screen.screen import Company, ScreenStatus, evaluate, rank
 
 
 def make(ticker, rev, prior, ocf, capex, sbc, shares_now, shares_prior,
@@ -90,6 +90,8 @@ def test_profitable_with_nonpositive_forward_growth_is_rejected():
     assert r.peg is None
     assert not r.track_b
     assert not r.passed
+    # #6: negative consensus growth is a failed PEG, never NEEDS_DATA.
+    assert r.status is ScreenStatus.REJECTED
 
 
 def test_profitable_without_forward_pe_is_rejected():
