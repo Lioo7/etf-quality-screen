@@ -28,10 +28,13 @@ build = /issue-build N
 | 19 | #21 | issue | #16 |
 | 20 | #22 | issue | #16 |
 | 21 | #17 | issue |  |
-| 22 | #23 | build |  |
-| 23 | #18 | plan+build | M1 |
-| 24 | #30 | plan+build | #18 |
-| 25 | #25 | plan+build | #18, #9, #15 |
-| 26 | #31 | plan+build | #18 |
-| 27 | #27 | plan+build | #18, #25 |
-| 28 | #28 | plan+build | #27, #25 |
+| 22 | #36 | issue |  |
+| 23 | #37 | issue |  |
+| 24 | #23 | build |  |
+| 25 | #18 | plan+build | M1 |
+| 26 | #30 | plan+build | #18 |
+| 27 | #25 | plan+build | #18, #9, #15 |
+| 28 | #31 | plan+build | #18 |
+| 29 | #35 | plan+build | #18, #23 |
+| 30 | #27 | plan+build | #18, #25 |
+| 31 | #28 | plan+build | #27, #25 |
