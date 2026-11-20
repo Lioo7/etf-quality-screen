@@ -1,64 +1,56 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+Guidance for Claude Code in this repository.
 
 ## Commands
 
 A virtualenv lives at `.venv` (git-ignored). Use it directly:
 
 ```bash
-.venv/bin/pip install -r requirements.txt   # full deps (yfinance pulls pandas; lxml added explicitly)
-.venv/bin/python -m pytest -q                # run all tests
-.venv/bin/python -m pytest tests/test_screen.py::test_pricey_but_profitable_is_rejected  # single test
-RUN_LIVE_TESTS=1 .venv/bin/python -m pytest tests/test_live_yfinance.py -q  # live Yahoo acceptance (network)
-.venv/bin/python -m flake8 etf_screen tests  # lint (config in setup.cfg: max-line-length=100)
+.venv/bin/pip install -r requirements.txt   # full deps
+.venv/bin/python -m pytest -q                # all tests
+.venv/bin/python -m pytest tests/test_screen.py::test_pricey_but_profitable_is_rejected  # one test
+RUN_LIVE_TESTS=1 .venv/bin/python -m pytest tests/test_live_yfinance.py -q  # live Yahoo (network)
+.venv/bin/python -m flake8 etf_screen tests  # lint (setup.cfg: max-line-length=100)
 ```
 
-Run the screener:
-
 ```bash
-.venv/bin/python -m etf_screen.cli --provider mock --tickers MSFT,GOOGL,CRWD   # offline, deterministic
-.venv/bin/python -m etf_screen.cli --universe qqq --throttle 0.5               # full live run (~100 yfinance calls)
-.venv/bin/python -m etf_screen.cli --tickers MSFT,GOOGL,CRWD --export md       # with file export
-.venv/bin/python -m etf_screen.cli --holdings path/to/ARKK.csv --sector-context  # any ETF via issuer CSV
-.venv/bin/python -m etf_screen.cli --provider mock --consistency-years 3 --consistency-mode trend  # full gate set
+.venv/bin/python -m etf_screen.cli --provider mock --tickers MSFT,GOOGL,CRWD   # offline
+.venv/bin/python -m etf_screen.cli --universe qqq --throttle 0.5               # live (~100 calls)
+.venv/bin/python -m etf_screen.cli --tickers MSFT,GOOGL,CRWD --export md       # file export
+.venv/bin/python -m etf_screen.cli --holdings path/to/ARKK.csv --sector-context  # issuer CSV
+.venv/bin/python -m etf_screen.cli --provider mock --consistency-years 3 --consistency-mode trend
 ```
 
 ## Backlog
 
-GitHub Issues. Run `gh issue list` before new work; one issue per session. Reference issues in commits (`closes #N`, `refs #N`). Format: `.github/ISSUE_TEMPLATE/task.md`. Decisions and reasons: `docs/decisions.md`; a `spec-change` issue adds an entry there. No personal portfolio details in issues (public repo).
+GitHub Issues. Run `gh issue list` before new work; one issue per session. Reference issues in commits (`closes #N`, `refs #N`). Format: `.github/ISSUE_TEMPLATE/task.md`. Decisions and reasons: `docs/decisions.md`; a `spec-change` issue adds an entry there. No personal portfolio details in issues (public repo). Order and command per issue: docs/queue.md; every new issue gets a row there in the same change. `/next` shows what to run.
 
 ## Architecture
 
-A CLI stock screener whose central design rule is **strict separation of screening logic from data sourcing**. The validated screening methodology is a *fixed spec* — do not redesign thresholds or filter/track routing; the acceptance tests enforce exact behavior.
+A CLI stock screener that strictly separates screening logic from data sourcing. The methodology is a *fixed spec*: do not redesign thresholds or track routing; acceptance tests enforce exact behavior.
 
-**Data flow:** `cli.run()` → `constituents.resolve(etf)` (or `--tickers`) → for each ticker `provider.fetch()` → optional `overrides.apply_override()` → `screen.evaluate()` → `screen.rank()` → console report + optional `export`.
+Flow: `cli.run()` → `constituents.resolve()` / `--tickers` → `provider.fetch()` → `overrides.apply_override()` → `screen.evaluate()` → `screen.rank()` → report + optional `export`.
 
-- **`screen.py`** — pure logic, **no network/IO**. `Company` (raw statement-line inputs, all metrics derived from these — never pre-packaged ratios), `evaluate(c, consistency_years=0, consistency_mode="strict", ipo_seasoning_months=12, today=None) -> Result`, `rank()`. The verdict pipeline, in order: (0) **pre-revenue firewall** (`revenue_ttm <= 0` short-circuits to `PRE_REVENUE` before any math); (1) the four snapshot filters (Rule of 40, PEG≤2, P/S guardrail, SBC≤15%) + two-track routing — the authoritative, fixed core; (2) for a snapshot qualifier, the **snapshot-qualifier gates** (leverage `net_debt/FCF≤3`, goodwill `≤40%` of assets, ROIC `≥10%`, and the **earnings-quality gate**: cumulative 3-yr `AdjFCF/NI ≥ 0.8`, N/A-never-fail when cumulative NI ≤ 0 or no NI history) and the **multi-year consistency gate** (`track_a_consistency` / `track_b_consistency` over `Company.history`); (3) a snapshot failer blocked **only** by valuation (P/S and/or a computable-but-failed PEG) has the same gates run on its would-be track — all clear → `WATCHLIST` with `_unlock_prices()` buy triggers; likewise a profitable failer whose **only** blocker is an *untestable* PEG (no estimates, P/S passing) → `NEEDS_DATA` with the overrides.json hint (no unlock prices — nothing failed on price); any gate fail either way → plain REJECTED reporting valuation reasons only (hypothetical gate outcomes stay moot and unattached). Both candidacies and the real track share the ONE `_run_quality_gates` closure — never re-assemble the gate set inline; (4) **LAST**, the unconditional IPO-seasoning override: a parseable `ipo_date` inside the window forces `RECENT_IPO` whatever the gates decided (the firewall still wins — it returns before this runs; would-be-WATCHLIST unlock prices are shed). `ScreenStatus` (PASS / REJECTED / PRE_REVENUE / INSUFFICIENT_HISTORY / NOT_EVALUABLE / RECENT_IPO / WATCHLIST / NEEDS_DATA) is the single verdict source — `Result.passed/evaluable/insufficient_history/recent_ipo/watchlist/needs_data` are read-only **properties** derived from it. Also holds the **informational-only** layers (never gate, never rank): sector context (`sector_medians()`, `annotate_sector_context()`), ROIC history (`roic_history()` → `roic_durable`), gross-margin profile (`margin_profile()` → `pricing_power` / `gm_not_applicable`), and entry timing (`_entry_timing()` → `pct_off_ath`, `three_month_return`, `HOT`) — see invariants.
-- **`providers.py`** — the only place that touches the network. `DataProvider` ABC with `YFinanceProvider` (default, key-less), `FMPProvider` (optional, needs paid tier + `FMP_API_KEY`), `MockProvider` (tests/offline). Providers **raise `DataUnavailable`** rather than fabricate. `_extract_yf()` is factored out as a pure function (takes income/cash-flow/**balance-sheet** DataFrames + info dict) so basis-selection and balance-sheet extraction are testable without network; it tolerates absent balance-sheet frames (test path → gate-passing defaults), while the real `_fetch_uncached` raises if Yahoo exposes no balance sheet at all.
-- **`constituents.py`** — key-less ETF→tickers resolution. Wikipedia index table (primary, returns a ticker→name map) → bundled dated static list (fallback, prints a STALE warning). Keyed by ETF ticker (QQQ, SPY). Also `holdings_from_csv()` (the `--holdings` flag): a generic issuer-holdings-CSV loader (ARK/iShares/SSGA/…) that finds the ticker column by name, tolerates preamble/footer rows, and reuses `_looks_like_ticker` to drop junk — lets the tool screen *any* ETF. And `tickers_from_file()` (the `--tickers-file` flag): one ticker per line, `#` comments, dupes dropped with a note, empty file / junk line = loud error; curated thesis lists live under `universes/`. Precedence: `--tickers` > `--tickers-file` > `--holdings` > `--universe`.
-- **`overrides.py`** — git-ignored `overrides.json` (ticker→verified field values) that takes precedence over the provider; can patch fields or rescue a fully-specified skipped name.
-- **`cache.py`** — per-day JSON disk cache under `.cache/<provider>/<date>/` making full runs resumable.
-- **`export.py`** — CSV/Markdown writers for the full result set with a provenance header.
+- `screen.py`: pure logic, no IO. The verdict pipeline and status semantics are documented in its module docstring. `ScreenStatus` is the single verdict source; `Result.passed` etc. are derived properties, so set `status`, never those.
+- `providers.py`: the only network code; providers raise `DataUnavailable` rather than fabricate. Provider rules: `.claude/rules/providers.md`.
+- `constituents.py`: ETF → tickers (Wikipedia, bundled static fallback, `--holdings` CSV, `--tickers-file`). Precedence: `--tickers` > `--tickers-file` > `--holdings` > `--universe`.
+- `overrides.py` (git-ignored `overrides.json` beats the provider), `cache.py` (per-day JSON cache), `export.py` (CSV/Markdown).
 
 ## Critical invariants
 
-- **The Track B / PEG guard.** Track B is reachable **only when PEG is genuinely N/A** (GAAP-unprofitable, no forward P/E). A *profitable* name that fails the PEG filter must be **rejected**, never routed to Track B. The `PriceyButProfitable` acceptance test exists solely to enforce this — never weaken it.
-- **Never fabricate data.** Missing/blocked values → skip the name and report it (the "could not source" section); never fill from memory or default silently. The sanctioned exceptions are *line items absent from a statement that was retrieved*: SBC (`sbc_assumed_zero`), and on the balance sheet **goodwill** (`goodwill_assumed_zero`) and **total debt** (`debt_assumed_zero`) → treated as 0, flagged, and surfaced in a review section. The required balance-sheet lines (**cash, total assets, total equity**) are never assumed — their absence raises `DataUnavailable`. (`Company`'s gate-passing field defaults exist only for test ergonomics; providers always populate real values.)
-- **Pre-revenue firewall runs first.** `revenue_ttm <= 0` → `PRE_REVENUE`, returned before any metric math (no divide-by-zero, no gate). A name with current revenue > 0 but a zero *prior* year stays a normal `NOT_EVALUABLE` divide-by-zero case.
-- **Balance-sheet gates layer onto a snapshot qualifier only**, and **status precedence is fixed**: a balance-sheet failure is definitive (REJECTED) and wins over the historical gate; otherwise INSUFFICIENT_HISTORY, then a consistency FAIL, else PASS. A name that fails the *snapshot* is a normal rejection — its balance sheet and history are moot (the WATCHLIST candidacy runs them *hypothetically* but never attaches or reports their outcomes on a failed candidacy). Leverage + goodwill + earnings quality apply to every qualifier (both tracks); **ROIC gates only a Track-A name under `strict` mode** and is advisory (never fails) when not computable (`invested_capital ≤ 0` or EBIT absent → `roic is None`); **earnings quality is N/A (never a fail) when cumulative NI ≤ 0** — Track B's own quality gate covers unprofitable names.
-- **WATCHLIST is not a loophole, and neither is NEEDS_DATA.** WATCHLIST is reachable only when every quality gate passes and valuation (P/S / computable PEG) is the sole blocker; the `PriceyButProfitable` archetype lands there via a *computable* failed PEG, still `not passed`, still `not track_b`. NEEDS_DATA (v0.2.1) is its disjoint sibling: profitable, PEG **untestable** (no estimates), P/S passing, no quality gate *failing* — "PEG untestable" is not "PEG failed", but Track B stays barred and no price is attached (nothing failed on price; overrides.json supplies `forward_pe`/`forward_eps_growth`, and a verified `market_cap` when the Yahoo OTC/ADR cap looks wrong). Candidacy asymmetry, by design: WATCHLIST requires a consistency **PASS** (it claims every quality gate passed), while NEEDS_DATA tolerates **INSUFFICIENT** (thin history is one more missing-data condition — the live KYCCF profile — reported via the attached consistency result) yet still rejects on a consistency **FAIL**. A name that also fails P/S or any gate stays plain REJECTED in both cases. Zero/negative growth → unlock price is None. Neither status ever enters `rank()`.
-- **RECENT_IPO is an unconditional final override** (after all gates, mirroring INSUFFICIENT_HISTORY's never-in-the-shortlist role), except the pre-revenue firewall which returns earlier. An unknown/unparseable `ipo_date` is never guessed — the name screens normally and is flagged `ipo_date_unknown`.
-- **The advisory layers never gate.** ROIC history (`roic_durable`), gross-margin profile (`pricing_power` / `gm_not_applicable`), entry timing (`HOT`), the EQ **capex-intensity disambiguator** (`eq_capex_intensity`: capex >15% of revenue over the EQ window appends "may reflect capex intensity, not accruals" to a FAILED EQ reason — it never flips the gate), the OTC ADR honesty flag (`otc_adr_data_suspect` — 5-letter tickers ending in Y/F), and the Financial Services asterisk (`financial_sector_note`) attach as reading notes only and must never change `passed`, `track`, or rank. Per-year fields missing from `AnnualPeriod` (all `None`-defaulted: `operating_income`, `total_debt`, `cash_and_equivalents`, `total_equity`, `net_income`, `cogs`) skip that year for that metric only — they never truncate the consistency-gate run, which keys solely on revenue/OCF/capex/SBC.
-- **Strict vs trend is Track A only; Track B never changes with the mode.** `evaluate()` defaults to `strict` (preserves library/test behavior); the **CLI defaults to `trend`**. `strict` = Rule of 40 ≥ 40 every windowed year; `trend` = recency anchor (latest ≥ 40) + mean ≥ 30 + no lumpy sub-floor collapse (a launch year is forgiven). The windowing (N+1 contiguous annual periods) is mode-independent. `tests/test_consistency.py` pins `consistency_mode="strict"` on the strict-behavior cases — don't drop the pins.
-- **One accounting basis per company (yfinance).** TTM requires a full trailing year of *both* income and cash-flow quarters; level metrics (revenue, OCF/capex/SBC, NI, EBIT) then sum the newest 4. Yahoo caps quarterly statements at ~5 columns (observed 2026-07), so the prior-year TTM is usually unpublished: growth then derives from the newest quarter vs its **date-aligned (350–380d) year-ago counterpart** (`Company.revenue_latest_q`/`revenue_year_ago_q` — raw sourced lines, flagged in `low_confidence`; `revenue_ttm_prior` is NaN, meaning "not summable"), via `_period_metrics(growth_pair=...)`. The 8-quarter true-prior-TTM sum wins when it exists. No aligned pair → the honest annual fallback (revenue *and* OCF/capex/SBC from the latest fiscal year) so growth/FCF-margin/SBC%/Rule40 share one base. Basis is recorded on `Company.basis`.
-- A short or empty shortlist is an acceptable, expected result of a strict screen — **do not loosen thresholds to populate the table.**
-- **Sector context is informational only.** The per-sector medians and the `--sector-context` / `--rank sector-relative` views must **never** change `passed`, `track`, or which names survive — the four filters and two tracks stay the sole gates. `tests/test_sector.py` has a regression proving verdicts+rank are identical with and without the feature; never weaken it.
+- **Track B / PEG guard.** Track B only when PEG is genuinely N/A (GAAP-unprofitable, no forward P/E). A profitable name failing PEG is rejected, never Track B. The `PriceyButProfitable` test enforces this; never weaken it.
+- **Never fabricate data.** Missing values → skip and report ("could not source"). Sanctioned exceptions are line items absent from a retrieved statement: SBC, goodwill, total debt → 0, flagged. Cash, total assets, total equity are never assumed.
+- **Pre-revenue firewall runs first** (`revenue_ttm <= 0` → `PRE_REVENUE`, before any math).
+- **Status precedence is fixed.** Balance-sheet failure (REJECTED) beats the history gate; then INSUFFICIENT_HISTORY, consistency FAIL, else PASS. A snapshot failer's gates are moot.
+- **WATCHLIST and NEEDS_DATA are not loopholes.** WATCHLIST only when every quality gate passes and valuation is the sole blocker; NEEDS_DATA only when PEG is untestable, P/S passes and no gate fails (no unlock price). Neither enters `rank()`.
+- **RECENT_IPO is the unconditional final override** (the firewall still wins). Unknown `ipo_date` is never guessed.
+- **Strict vs trend is Track A only**; Track B never changes with the mode. `evaluate()` defaults to `strict`, the CLI to `trend`. `tests/test_consistency.py` pins `strict` on strict cases; keep the pins.
+- **Advisory layers never gate** (sector context, ROIC history, margin profile, entry timing/HOT, EQ capex note, OTC flag, financial note): they must never change `passed`, `track` or rank. `tests/test_sector.py` proves it; never weaken it.
+- A short or empty shortlist is expected: **do not loosen thresholds to populate the table.**
 
 ## Conventions
 
 - Solo side project: lean but portfolio-grade. CI must stay green; avoid over-engineering; keep README and inline docs balanced.
-- Adding a field to `Company`: also update `_COMPANY_FIELDS` in `providers.py` (cache round-trip), `export.COLUMNS` if it should be exported, populate it in **every** provider, and — if it has a default — keep that default gate-passing so the positional/keyword test fixtures stay green. A new patchable scalar also goes in `overrides._OVERRIDABLE` (and stays out of `_REQUIRED` if it shouldn't block a from-scratch rescue — informational scalars like `ipo_date` and the price snapshot live in `overrides._INFORMATIONAL` for exactly this).
-- Informational `Company` fields (`ipo_date`, `current_price`, `ath_price`, `price_3mo_ago`, `price_history_years`) default to `None` = unknown, rendered N/A — **not** to a fabricated neutral value. yfinance price data comes from `history(period="max", auto_adjust=True)` (split/dividend-adjusted; a raw-close ATH would be meaningless after a split); a failed price/IPO-date fetch flags `low_confidence` but never skips the name.
-- `Result`'s verdict fields (`passed`, `evaluable`, `insufficient_history`) are **properties** derived from `ScreenStatus` — set `status`, never these. Add a new outcome by extending the enum + its properties, not by adding a parallel boolean.
-- yfinance returns raw dollars, Mock uses $M — fine because every screen metric is a scale-invariant ratio.
+- Adding a `Company` field: update `_COMPANY_FIELDS` in `providers.py` (cache round-trip), `export.COLUMNS` if exported, populate it in every provider, keep any default gate-passing, and add patchable scalars to `overrides._OVERRIDABLE` (informational ones to `_INFORMATIONAL`).
+- Informational fields (`ipo_date`, price snapshot) default to `None` = unknown, rendered N/A, never a fabricated value.

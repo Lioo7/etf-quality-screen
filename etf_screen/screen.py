@@ -11,6 +11,53 @@ Track A only (it must clear the PEG filter; if PEG is not computable it is
 rejected, never routed to Track B), while a GAAP-unprofitable name is eligible
 for the PEG-exempt Track B (subject to the quality gate). ``forward_pe`` is
 irrelevant to routing.
+
+Verdict pipeline (``evaluate``), in order:
+
+0. Pre-revenue firewall: ``revenue_ttm <= 0`` returns ``PRE_REVENUE`` before any metric
+   math. Current revenue > 0 with a zero *prior* year stays a ``NOT_EVALUABLE``
+   divide-by-zero case.
+1. The four snapshot filters (Rule of 40, PEG <= 2, P/S guardrail, SBC <= 15%) and
+   two-track routing: the authoritative, fixed core.
+2. A snapshot qualifier then faces the quality gates: leverage (net debt / FCF <= 3),
+   goodwill (<= 40% of assets), ROIC (>= 10%, Track A under ``strict`` only; advisory
+   when not computable), earnings quality (cumulative 3-year AdjFCF / NI >= 0.8; N/A,
+   never a fail, when cumulative NI <= 0 or no NI history), and the multi-year
+   consistency gate (``track_a_consistency`` / ``track_b_consistency`` over
+   ``Company.history``). A balance-sheet failure is definitive (REJECTED) and wins over
+   the historical gate; otherwise INSUFFICIENT_HISTORY, then a consistency FAIL, else PASS.
+3. A snapshot failer blocked only by valuation (P/S and/or a computable-but-failed PEG)
+   has the same gates run on its would-be track: all clear -> ``WATCHLIST`` with
+   ``_unlock_prices()`` buy triggers (requires a consistency PASS). A profitable failer
+   whose only blocker is an untestable PEG (no estimates, P/S passing) -> ``NEEDS_DATA``
+   with the overrides.json hint and no unlock price (tolerates INSUFFICIENT history, still
+   rejects on a consistency FAIL). Any gate fail -> plain REJECTED with valuation reasons
+   only. Candidacies and the real track share the ONE ``_run_quality_gates`` closure;
+   never re-assemble the gate set inline.
+4. LAST, the unconditional IPO-seasoning override: a parseable ``ipo_date`` inside the
+   window forces ``RECENT_IPO`` whatever the gates decided (would-be-WATCHLIST unlock
+   prices are shed). An unknown date is never guessed; the name is flagged
+   ``ipo_date_unknown``.
+
+``ScreenStatus`` (PASS / REJECTED / PRE_REVENUE / INSUFFICIENT_HISTORY / NOT_EVALUABLE /
+RECENT_IPO / WATCHLIST / NEEDS_DATA) is the single verdict source; ``Result.passed``,
+``evaluable``, ``insufficient_history``, ``recent_ipo``, ``watchlist`` and ``needs_data``
+are read-only properties derived from it. Add an outcome by extending the enum and its
+properties, not a parallel boolean. WATCHLIST and NEEDS_DATA never enter ``rank()``.
+
+Consistency modes (Track A only; Track B never changes): ``strict`` = Rule of 40 >= 40 in
+every windowed year; ``trend`` = latest >= 40 + mean >= 30 + no lumpy sub-floor collapse
+(a launch year is forgiven). The window is N+1 contiguous annual periods in both modes.
+
+Informational-only layers (never gate, never rank, never change ``passed``/``track``):
+sector context (``sector_medians()``, ``annotate_sector_context()``), ROIC history
+(``roic_history()`` -> ``roic_durable``), gross-margin profile (``margin_profile()`` ->
+``pricing_power`` / ``gm_not_applicable``), entry timing (``_entry_timing()`` ->
+``pct_off_ath``, ``three_month_return``, ``HOT``), the EQ capex-intensity note
+(``eq_capex_intensity``), the OTC ADR flag (``otc_adr_data_suspect``) and the Financial
+Services asterisk (``financial_sector_note``). Per-year ``AnnualPeriod`` fields that are
+missing skip that year for that metric only; they never truncate the consistency run,
+which keys solely on revenue/OCF/capex/SBC.
 """
 
 from __future__ import annotations

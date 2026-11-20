@@ -1,0 +1,19 @@
+---
+name: next
+description: Show the next backlog item and the exact command to run. Changes nothing.
+disable-model-invocation: true
+model: haiku
+effort: low
+---
+Don't edit anything.
+
+1. `gh pr list --state open`. If an issue PR is open, reply "Merge or close PR #X first
+   (send it for review)" and stop.
+2. Read docs/queue.md. Walk the rows in order; skip closed issues
+   (`gh issue view N --json state,title`). For the first open row, check its "Depends on"
+   issues are closed; if not, note it as blocked and continue to the next row.
+3. Reply exactly:
+   Next: #N <title>
+   Run: /clear, then <command for that row>
+   After that: #M <title> (<command>)
+   Blocked: <rows skipped for open dependencies, if any>

@@ -13,3 +13,6 @@ results/
 
 # Issuer holdings CSVs dropped for --holdings runs (keep README)
 holdings/*.csv
+
+# Personal Claude Code approvals (shared config is .claude/settings.json)
+.claude/settings.local.json

@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python -m pytest *)",
+      "Bash(.venv/bin/python -m flake8 *)",
+      "Bash(.venv/bin/python -m etf_screen.cli --provider mock *)",
+      "Bash(gh issue list *)",
+      "Bash(gh issue view *)",
+      "Bash(gh pr view *)",
+      "Bash(gh pr list *)",
+      "Bash(gh pr checks *)",
+      "Bash(gh repo view *)"
+    ],
+    "deny": [
+      "Read(./.env)"
+    ]
+  },
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cd \"$CLAUDE_PROJECT_DIR\" && out=$(.venv/bin/python -m pytest -q 2>&1) || { echo \"$out\" >&2; exit 2; }; out=$(.venv/bin/python -m flake8 etf_screen tests 2>&1) || { echo \"$out\" >&2; exit 2; }"
+          }
+        ]
+      }
+    ]
+  }
+}

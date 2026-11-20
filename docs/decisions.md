@@ -22,3 +22,9 @@ The backlog lives in GitHub Issues (one goal, evidence, scope, Done-when). `spec
 
 ## D7 — LLM access (2026-11-19)
 The memo feature (#18) uses a swappable backend: (a) the user's own signed-in Claude Code CLI (`claude -p`), personal use only, drawing from that user's plan limits; (b) OpenRouter (OpenAI-compatible key); (c) an Anthropic API key. Every user brings their own credential; no tokens or keys in the repo; CI uses recorded responses only. Anthropic's rules for programmatic use of subscriptions changed several times in 2026, so re-check the 'Use the Claude Agent SDK with your Claude plan' help article before relying on (a).
+
+## D8 — No persona-agent layer (2026-11-19)
+ai-hedge-fund-style agents are not integrated. They output buy/sell views, need their own paid data source, re-analyze the same numbers, and can't be evaluated against ground truth. Qualitative context comes from the audited context check (#25).
+
+## D9 — Investor lenses (refines D8, 2026-11-19)
+We build our own lens layer: checklists of publicly documented principles (Buffett/Munger, Lynch, Wood, a skeptic), structured, source-tagged, no buy/sell, plus a synthesis brief audited by an evaluator (#27, #28). D8 still holds for ai-hedge-fund itself: its code is not integrated, and its prompts may inform ours with MIT attribution.
