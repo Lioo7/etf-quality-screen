@@ -16,3 +16,7 @@ holdings/*.csv
 
 # Personal Claude Code approvals (shared config is .claude/settings.json)
 .claude/settings.local.json
+
+# Decision journal: template is committed, entries stay local
+journal/*
+!journal/TEMPLATE.md

@@ -34,3 +34,6 @@ Valuation context (#29) and decision categories (#32) are deterministic, and the
 
 ## D11 — No macro forecasts or news-sentiment signals (2026-11-20)
 Macro enters as structural exposures (#25), and current events only as cited thesis-risk flags for final candidates (#31). Neither ever changes a verdict.
+
+## D12 — Buy and sell discipline (2026-11-20)
+No market timing and no bull/bear regime calls. Momentum and relative strength (#36) are informational context for staging entries. Selling is reviewed for the documented reasons (thesis wrong, company deteriorated, clearly better opportunity) through #32's review categories, never automated.
