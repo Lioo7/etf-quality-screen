@@ -60,3 +60,19 @@ def test_fmp_absent_sbc_gives_full_history_with_zero():
 def test_fmp_null_sbc_in_one_year_still_truncates():
     inc, cf = _fmp(["2025", "2024", "2023"], {"2025": 1.0, "2024": None, "2023": 1.0})
     assert [p.fiscal_label for p in _fmp_annual_history(inc, cf)] == ["2025"]
+
+
+def test_extract_yf_flags_annual_sbc_assumed_zero_when_quarterly_has_it():
+    from etf_screen.providers import _extract_yf
+    qcols = pd.date_range("2025-12-31", periods=8, freq="-1QE")
+    q_inc = pd.DataFrame({"Total Revenue": [100] * 8, "Diluted Average Shares": [10] * 8,
+                          "Net Income": [20] * 8}, index=qcols).T
+    q_cf = pd.DataFrame({"Operating Cash Flow": [30] * 8, "Capital Expenditure": [-5] * 8,
+                         "Stock Based Compensation": [2] * 8}, index=qcols).T
+    a_cf = _df({"Operating Cash Flow": [80.0, 70.0, 60.0, 50.0],
+                "Capital Expenditure": [-10.0, -9.0, -8.0, -7.0]})
+    info = {"marketCap": 1_000_000, "shortName": "T", "forwardPE": 20.0,
+            "forwardEps": 6.0, "trailingEps": 5.0}
+    c = _extract_yf("TST", q_inc=q_inc, a_inc=A_INC, q_cf=q_cf, a_cf=a_cf, info=info)
+    assert not c.sbc_assumed_zero
+    assert any("annual SBC" in m for m in c.low_confidence)

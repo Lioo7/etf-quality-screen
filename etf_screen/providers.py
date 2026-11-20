@@ -896,6 +896,8 @@ class FMPProvider(DataProvider):
         # bal_a additionally feeds the advisory ROIC-history annotation.
         inc_a = self._get(f"income-statement/{ticker}", period="annual", limit=10)
         cf_a = self._get(f"cash-flow-statement/{ticker}", period="annual", limit=10)
+        if sbc_found and not any(q.get("stockBasedCompensation") is not None for q in cf_a):
+            low_conf.append("annual SBC not reported by source - assumed 0 in history")
         bal_a = self._get(f"balance-sheet-statement/{ticker}", period="annual", limit=10)
 
         return Company(
