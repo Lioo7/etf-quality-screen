@@ -76,3 +76,24 @@ def test_extract_yf_flags_annual_sbc_assumed_zero_when_quarterly_has_it():
     c = _extract_yf("TST", q_inc=q_inc, a_inc=A_INC, q_cf=q_cf, a_cf=a_cf, info=info)
     assert not c.sbc_assumed_zero
     assert any("annual SBC" in m for m in c.low_confidence)
+
+
+def test_all_nan_sbc_row_is_absent_full_history_and_flagged():
+    from etf_screen.providers import _extract_yf, _sbc_row_absent
+    nan = float("nan")
+    a_cf = _df({"Operating Cash Flow": [80.0, 70.0, 60.0, 50.0],
+                "Capital Expenditure": [-10.0, -9.0, -8.0, -7.0],
+                "Stock Based Compensation": [nan] * 4})
+    assert _sbc_row_absent(a_cf)
+    hist = _annual_history(A_INC, a_cf)
+    assert len(hist) == 4 and all(p.sbc == 0.0 for p in hist)
+    qcols = pd.date_range("2025-12-31", periods=8, freq="-1QE")
+    q_inc = pd.DataFrame({"Total Revenue": [100] * 8, "Diluted Average Shares": [10] * 8,
+                          "Net Income": [20] * 8}, index=qcols).T
+    q_cf = pd.DataFrame({"Operating Cash Flow": [30] * 8, "Capital Expenditure": [-5] * 8,
+                         "Stock Based Compensation": [2] * 8}, index=qcols).T
+    info = {"marketCap": 1_000_000, "shortName": "T", "forwardPE": 20.0,
+            "forwardEps": 6.0, "trailingEps": 5.0}
+    c = _extract_yf("TST", q_inc=q_inc, a_inc=A_INC, q_cf=q_cf, a_cf=a_cf, info=info)
+    assert any("annual SBC" in m for m in c.low_confidence)
+    assert not _sbc_row_absent(None)

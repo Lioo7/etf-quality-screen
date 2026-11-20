@@ -695,8 +695,12 @@ def _labeled_row(df, labels) -> dict:
 
 
 def _sbc_row_absent(a_cf) -> bool:
-    """True when the cash-flow frame has no SBC row at all (vs a row with NaNs)."""
-    return a_cf is not None and not any(label in a_cf.index for label in _SBC)
+    """True when the cash-flow frame has no finite SBC value in any year.
+
+    A missing row and an all-NaN row both count (parity with the snapshot path,
+    where ``_row`` drops NaNs). A row with some finite years is NOT absent.
+    """
+    return a_cf is not None and not _labeled_row(a_cf, _SBC)
 
 
 def _fiscal_label(col) -> str:
@@ -714,9 +718,10 @@ def _annual_history(a_inc, a_cf, a_bal=None) -> list:
     most recent complete year and TRUNCATES at the first backward gap. A skipped
     middle year would misalign growth, so we stop rather than skip. Lines are
     never fabricated or zero-filled — a missing line just ends the history. The one
-    sanctioned exception is SBC: a cash-flow frame with NO SBC row at all means the
-    company doesn't report it (sbc=0, as in the snapshot path); a row that is NaN in
-    a given year is still a gap.
+    sanctioned exception is SBC: a cash-flow frame with no finite SBC value in any
+    year (row missing or all NaN) means the company doesn't report it (sbc=0, as in
+    the snapshot path); a row with some finite years that is NaN in one year is
+    still a gap.
 
     Operating income, net income, COGS (income frame) and total debt / cash /
     total equity (balance-sheet frame, when supplied) are looked up per year on a
