@@ -658,4 +658,7 @@ filter from being toothless.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+Copyright (c) 2026 Lioz Akirav. All rights reserved. The source is public for review
+and reference. GitHub's Terms of Service allow viewing and forking on GitHub; no other
+license to use, copy, modify or distribute it is granted. For any other use, contact
+the author.
