@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date
 from math import isnan
@@ -26,7 +27,8 @@ from .constituents import holdings_from_csv, resolve, tickers_from_file
 from .overrides import apply_override, company_from_override, load_overrides
 from .providers import DEFAULT_FETCH_TIMEOUT, PROVIDERS, DataProvider, DataUnavailable
 from .screen import (
-    Result, ScreenStatus, annotate_sector_context, evaluate, peg_untestable_reason, rank,
+    ONE_OFF_STRUCTURAL, PEG_MAX, Result, ScreenStatus, annotate_sector_context, evaluate,
+    peg_untestable_reason, rank,
 )
 
 
@@ -310,8 +312,9 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
     # --- needs data: every testable gate passed, PEG had no estimates to test ---
     if needs_data:
         print(f"\nNEEDS_DATA ({len(needs_data)}) — every testable gate passed but PEG "
-              f"had no usable consensus estimates to test (missing, non-positive or "
-              f"in another currency; common for unsponsored ADRs). Not in the "
+              f"could not be tested (consensus estimates missing, non-positive or "
+              f"in another currency, common for unsponsored ADRs; or consensus FY0 "
+              f"distorted by one-off items). Not in the "
               f"shortlist; verify estimates yourself and supply forward_pe "
               f"(= price / FY1 consensus EPS) and forward_eps_growth "
               f"(= 100 x (FY1 / FY0 - 1)) in overrides.json to complete the screen "
@@ -323,6 +326,12 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
                   f"P/S {_f(r.p_s, 1)} vs guardrail {_f(r.ps_guardrail, 1)}, "
                   f"SBC {_f(r.sbc_pct)}%; {peg_untestable_reason(r.company)}"
                   f"{_flags(r)}")
+            if r.one_off_task is not None:
+                _print_one_off_task(r.one_off_task)
+
+    line = one_off_not_run_line(results)
+    if line:
+        print(f"\n{line}")
 
     if rejected:
         print("\nWhy names were rejected:")
@@ -490,6 +499,35 @@ def _short(s: str, n: int = 24) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def one_off_not_run_line(results: list[Result]) -> str | None:
+    """One summary line for the structural reasons the #61 check did not run (D19)."""
+    kinds = Counter(ONE_OFF_STRUCTURAL[c] for r in results
+                    if (c := r.one_off_unavailable_cause) in ONE_OFF_STRUCTURAL)
+    if not kinds:
+        return None
+    parts = ", ".join(f"{k} {kinds[k]}" for k in ("mixed basis", "non-US", "FMP"))
+    return (f"one-off check not run for {sum(kinds.values())} names ({parts}): "
+            f"see export")
+
+
+def _print_one_off_task(o) -> None:
+    """The #61 verification task under a NEEDS_DATA line (guidance, never applied)."""
+    print(f"      verify: {o.verify}")
+    if o.growth_adj is None:
+        print(f"      not worth checking: FY0 minus the one-offs is {o.eps_fy0_adj:.2f} "
+              f"(<= 0), so PEG stays undefined even if confirmed")
+    elif o.peg_if_confirmed is None:
+        print(f"      not worth checking: adjusted growth {o.growth_adj:.1f}% (<= 0) "
+              f"would still fail PEG")
+    elif not o.would_pass:
+        print(f"      not worth checking: PEG {o.peg_if_confirmed:.2f} even if confirmed "
+              f"(> {PEG_MAX:.0f})")
+    else:
+        print(f"      if confirmed: FY0 {o.eps_fy0_adj:.2f}, growth {o.growth_adj:.1f}%, "
+              f"PEG {o.peg_if_confirmed:.2f} (passes <= {PEG_MAX:.0f}); "
+              f"overrides.json: {o.override_json}")
+
+
 def _flags(r: Result) -> str:
     """Render basis / override / low-confidence / advisory annotations for a result line."""
     tags = []
@@ -497,8 +535,8 @@ def _flags(r: Result) -> str:
         tags.append("manual override: " + ", ".join(r.company.overridden_fields))
     if r.basis and r.basis != "TTM":
         tags.append(f"basis: {r.basis}")
-    if r.company.low_confidence:
-        tags.append("low-confidence: " + ", ".join(r.company.low_confidence))
+    if r.low_confidence_notes:
+        tags.append("low-confidence: " + ", ".join(r.low_confidence_notes))
     if r.otc_adr_data_suspect:
         tags.append("otc_adr_data_suspect: Yahoo OTC ADR caps/statements often broken")
     if r.financial_sector_note:

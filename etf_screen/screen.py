@@ -30,9 +30,11 @@ Verdict pipeline (``evaluate``), in order:
    has the same gates run on its would-be track: all clear -> ``WATCHLIST`` with
    ``_unlock_prices()`` buy triggers (requires a consistency PASS). A profitable failer
    whose only blocker is an untestable PEG (estimates absent, non-positive or in another
-   currency; P/S passing) -> ``NEEDS_DATA`` with an overrides.json hint naming the cause
-   and no unlock price. Consensus EPS growth <= 0 is a FAILED PEG, never NEEDS_DATA or
-   WATCHLIST: no price or data fixes it (tolerates INSUFFICIENT history, still
+   currency, or consensus FY0 distorted by one-off items >= 10% of FY0, see
+   ``fy0_one_off_check``; P/S passing) -> ``NEEDS_DATA`` with an overrides.json hint
+   naming the cause and no unlock price. Consensus EPS growth <= 0 is a FAILED PEG,
+   never NEEDS_DATA or WATCHLIST, unless the one-off check makes PEG untestable: no
+   price or data fixes shrinking earnings (tolerates INSUFFICIENT history, still
    rejects on a consistency FAIL). Any gate fail -> plain REJECTED with valuation reasons
    only. Candidacies and the real track share the ONE ``_run_quality_gates`` closure;
    never re-assemble the gate set inline.
@@ -57,13 +59,15 @@ sector context (``sector_medians()``, ``annotate_sector_context()``), ROIC histo
 ``pricing_power`` / ``gm_not_applicable``), entry timing (``_entry_timing()`` ->
 ``pct_off_ath``, ``three_month_return``, ``HOT``), the EQ capex-intensity note
 (``eq_capex_intensity``), the OTC ADR flag (``otc_adr_data_suspect``) and the Financial
-Services asterisk (``financial_sector_note``). Per-year ``AnnualPeriod`` fields that are
+Services asterisk (``financial_sector_note``) and the street-EPS basis
+(``Company.street_basis``, D19). Per-year ``AnnualPeriod`` fields that are
 missing skip that year for that metric only; they never truncate the consistency run,
 which keys solely on revenue/OCF/capex/SBC.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from math import isnan, nan
@@ -76,6 +80,18 @@ RULE40_MIN = 40.0       # revenue growth% + adjusted FCF margin%
 PEG_MAX = 2.0           # Track A only
 SBC_MAX_PCT = 15.0      # SBC as % of revenue
 PS_GUARDRAIL_FACTOR = 0.5  # P/S must be <= factor * revenue growth%
+# One-off items embedded in consensus FY0 EPS (#61, D19): at or above this share of
+# EPS_FY0 (either sign) the PEG test is unadministrable, not failed.
+ONE_OFF_FY0_MAX = 0.10
+#: Notes the data layer adds when the #61 check could not run (D19). Structural causes
+#: (by design, the same for every such name) are not shown per name: one console
+#: summary line and the export column carry them. Data-problem causes stay per name.
+ONE_OFF_UNAVAILABLE = "one-off check unavailable ({})"
+MIXED_BASIS_CAUSE = "street EPS basis mixed (GAAP and adjusted quarters)"
+NON_US_CAUSE = "non-US issuer"
+FMP_CAUSE = "not supported by FMP"
+ONE_OFF_STRUCTURAL = {MIXED_BASIS_CAUSE: "mixed basis", NON_US_CAUSE: "non-US",
+                      FMP_CAUSE: "FMP"}
 
 # --- trend-mode consistency (Track A only; strict mode is the all-years rule) ---
 TREND_FLOOR = 25.0      # a windowed Rule-of-40 below this is "sub-floor"
@@ -146,6 +162,9 @@ def peg_untestable_reason(c: Company) -> str:
     if c.eps_fy0 <= 0 or c.eps_fy1 <= 0:
         return (f"non-positive consensus EPS (FY0 {c.eps_fy0:.2f}, "
                 f"FY1 {c.eps_fy1:.2f})")
+    one_off = fy0_one_off_check(c)
+    if one_off is not None and one_off.fires:
+        return one_off.reason
     # Both EPS are positive: the provider recorded the specific cause (currency
     # mismatch, no price) as a "PEG untestable:" low-confidence note.
     prefix = "PEG untestable: "
@@ -305,6 +324,16 @@ class Company:
     # unlock prices (market cap / shares) are then not shown, until #62 derives them
     # from the traded price instead.
     market_cap_converted: bool = False
+    # The FY0 quarters already reported (#61), oldest first, each a dict
+    # ``{quarter_end, eps_actual, eps_normalized}``: street actual EPS and
+    # normalized income / diluted shares. None = the one-off check could not be
+    # sourced (never guessed); [] = no FY0 quarter reported yet.
+    fy0_quarter_eps: list[dict] | None = None
+    # Basis of the street actual EPS over those quarters (D19), INFORMATIONAL only:
+    # "gaap" (matches statement diluted EPS; the check runs), "adjusted" (the
+    # company's non-GAAP EPS; one-offs excluded by construction, no check),
+    # "mixed" or "unavailable". None = unknown (provider does not classify).
+    street_basis: str | None = None
     # Annual statement history (OLDEST -> NEWEST) for the multi-year consistency
     # gate. Empty when the data layer could not source a contiguous run.
     history: list[AnnualPeriod] = field(default_factory=list)
@@ -419,6 +448,10 @@ class Result:
     # ``roic_history``). Never gates the verdict, never appears in ranking.
     margin_profile: "MarginProfile | None" = None
 
+    # One-off items in consensus FY0 (#61): set only when the check fired, i.e. PEG
+    # was made untestable. Carries the verification task; never auto-applied.
+    one_off: "OneOffCheck | None" = None
+
     @property
     def passed(self) -> bool:
         return self.status is ScreenStatus.PASS
@@ -497,6 +530,35 @@ class Result:
     def ps_guardrail(self) -> float:
         """The P/S ceiling for this name (0.5 x revenue growth%)."""
         return PS_GUARDRAIL_FACTOR * self.growth
+
+    @property
+    def one_off_task(self) -> "OneOffCheck | None":
+        """The #61 verification task: only on NEEDS_DATA, where confirming the one-offs
+        can complete the screen. A REJECTED name keeps ``one_off`` for its reason, but
+        a "worth checking" preview there would point at a name that cannot pass."""
+        return self.one_off if self.needs_data else None
+
+    @property
+    def one_off_unavailable_cause(self) -> str | None:
+        """Why the #61 check could not run (from the data layer's note), or None."""
+        head, tail = ONE_OFF_UNAVAILABLE.split("{}")
+        for note in self.company.low_confidence:
+            if note.startswith(head) and note.endswith(tail):
+                return note[len(head):len(note) - len(tail)]
+        return None
+
+    @property
+    def low_confidence_notes(self) -> list[str]:
+        """``company.low_confidence`` for display. A fired one-off check replaces the
+        generic #53 EPS-decline note with its specific reason; a structural "one-off
+        check unavailable" cause is summarized once per run, not repeated per name."""
+        drop = set()
+        if self.one_off is not None:
+            drop.add(EPS_DECLINE_NOTE)
+        cause = self.one_off_unavailable_cause
+        if cause in ONE_OFF_STRUCTURAL:
+            drop.add(ONE_OFF_UNAVAILABLE.format(cause))
+        return [n for n in self.company.low_confidence if n not in drop]
 
     @property
     def ps_headroom(self) -> float:
@@ -591,18 +653,24 @@ def evaluate(c: Company, consistency_years: int = 0,
     else:
         net_debt_to_fcf = net_debt / fcf
 
+    # Routing keys solely on trailing GAAP profitability.
+    gaap_profitable = c.net_income_ttm > 0
+
     # PEG is TESTABLE when both inputs are known. Positive growth gives the ratio;
     # growth <= 0 is a FAILED PEG (the ratio is undefined, so peg stays None, but
-    # the test was administered); unknown inputs leave it untestable.
-    peg_testable = c.forward_pe is not None and c.forward_eps_growth is not None
+    # the test was administered); unknown inputs leave it untestable. So does a
+    # consensus FY0 distorted by one-off items (#61, D19), whatever the growth sign:
+    # a failed test rejects, an unadministrable one asks for data.
+    one_off = fy0_one_off_check(c) if gaap_profitable else None
+    if one_off is not None and not one_off.fires:
+        one_off = None
+    peg_testable = (c.forward_pe is not None and c.forward_eps_growth is not None
+                    and one_off is None)
     peg = (
         c.forward_pe / c.forward_eps_growth
         if peg_testable and c.forward_eps_growth > 0
         else None
     )
-
-    # Routing keys solely on trailing GAAP profitability.
-    gaap_profitable = c.net_income_ttm > 0
 
     # If any input that gates a filter is NaN, the name can't be evaluated.
     # net_income_ttm is included as belt-and-suspenders: a NaN here would slip
@@ -690,6 +758,7 @@ def evaluate(c: Company, consistency_years: int = 0,
             gaap_profitable, pass_sbc, pass_rule40, pass_ps, quality_gate,
             sbc_pct, rule40, p_s, growth, peg,
             c.forward_eps_growth if peg_testable else None,
+            untestable_reason=one_off.reason if one_off is not None else None,
         )
         if EPS_DECLINE_NOTE in c.low_confidence:  # advisory text only, never a gate
             prefix = "PEG failed: consensus EPS growth"
@@ -808,7 +877,7 @@ def evaluate(c: Company, consistency_years: int = 0,
         unlock_ps_price=unlock_ps_price, unlock_peg_price=unlock_peg_price,
         status=status, track_a=track_a, track_b=track_b,
         track=track, reasons=reasons, consistency=consistency,
-        roic_history=roic_hist, margin_profile=margin_prof,
+        roic_history=roic_hist, margin_profile=margin_prof, one_off=one_off,
     )
 
 
@@ -841,6 +910,114 @@ def _unlock_prices(
     if track_a_like and not pass_peg and peg is not None and peg > 0:
         unlock_peg = implied_price * (PEG_MAX / peg)
     return unlock_ps, unlock_peg
+
+
+@dataclass
+class OneOffCheck:
+    """One-off items embedded in consensus FY0 EPS (#61), with the verification task.
+
+    ``embedded`` = sum over the FY0 quarters already reported of street actual EPS
+    minus normalized EPS. Street consensus keeps such items for companies without
+    adjusted EPS (a GOOGL equity-securities gain inflates FY0 and understates
+    growth) and drops them for adjusted-EPS reporters, where the two figures agree.
+    The "if confirmed" preview is guidance only and is never auto-applied.
+    """
+
+    ticker: str
+    quarters: list[dict]          # quarter_end, eps_actual, eps_normalized, embedded
+    embedded: float               # $/share
+    pct_fy0: float                # embedded as % of EPS_FY0
+    eps_fy1: float
+    forward_pe: float
+    eps_fy0_adj: float            # EPS_FY0 - embedded
+    growth_adj: float | None      # 100 x (FY1 / FY0_adj - 1); None when FY0_adj <= 0
+    peg_if_confirmed: float | None  # forward_pe / growth_adj; None when growth_adj <= 0
+
+    @property
+    def fires(self) -> bool:
+        return abs(self.pct_fy0) >= ONE_OFF_FY0_MAX * 100 - 1e-9  # float-safe >=
+
+    @property
+    def would_pass(self) -> bool:
+        return self.peg_if_confirmed is not None and self.peg_if_confirmed <= PEG_MAX
+
+    @property
+    def worth_checking(self) -> bool:
+        """False marks a name that would fail PEG even once the one-offs are confirmed."""
+        return self.fires and self.would_pass
+
+    @property
+    def reason(self) -> str:
+        return (f"consensus FY0 includes one-off items of {_signed_usd(self.embedded)}/share "
+                f"({self.pct_fy0:.1f}% of FY0)")
+
+    @property
+    def verify(self) -> str:
+        parts = [f"{q['quarter_end']} {_signed_usd(q['embedded'])}/share"
+                 for q in self.quarters if round(q["embedded"], 2) != 0]
+        return ("find the one-off items in that quarter's earnings release or 10-Q "
+                "(e.g. gains or losses on investments, impairments, restructuring or "
+                "merger charges, gains on asset sales) and confirm the after-tax amount "
+                "per diluted share: " + "; ".join(parts))
+
+    @property
+    def override_json(self) -> str:
+        """The overrides.json entry to paste if confirmed ("" when FY0_adj <= 0)."""
+        if self.growth_adj is None:
+            return ""
+        return json.dumps({self.ticker: {
+            "forward_pe": round(self.forward_pe, 2),
+            "forward_eps_growth": round(self.growth_adj, 2),
+            "eps_fy0": round(self.eps_fy0_adj, 2),
+        }})
+
+    def as_dict(self) -> dict:
+        """JSON-serializable verification task (exported as one column)."""
+        return {
+            "embedded_eps": round(self.embedded, 2), "pct_fy0": round(self.pct_fy0, 1),
+            "quarters": [{k: round(v, 2) if isinstance(v, float) else v
+                          for k, v in q.items()} for q in self.quarters],
+            "verify": self.verify,
+            "if_confirmed": {
+                "eps_fy0_adj": round(self.eps_fy0_adj, 2),
+                "growth_adj": None if self.growth_adj is None else round(self.growth_adj, 2),
+                "peg": (None if self.peg_if_confirmed is None
+                        else round(self.peg_if_confirmed, 2)),
+                "would_pass": self.would_pass,
+                "worth_checking": self.worth_checking,
+            },
+            "overrides": json.loads(self.override_json) if self.override_json else None,
+        }
+
+
+def _signed_usd(x: float) -> str:
+    return f"{'-' if x < 0 else '+'}${abs(x):.2f}"
+
+
+def fy0_one_off_check(c: Company) -> OneOffCheck | None:
+    """The #61 check, or None when it does not apply.
+
+    None when the quarter data was not sourced, PEG was already untestable (its own
+    reason stands) or the user supplied ``forward_eps_growth`` in overrides.json
+    (verified values win, so the suggested override does not re-trigger the check).
+    The caller reads ``fires``; an empty quarter list embeds nothing.
+    """
+    if (c.fy0_quarter_eps is None or c.forward_pe is None or c.forward_eps_growth is None
+            or c.eps_fy0 is None or c.eps_fy1 is None or c.eps_fy0 <= 0
+            or "forward_eps_growth" in c.overridden_fields):
+        return None
+    quarters = [{**q, "embedded": q["eps_actual"] - q["eps_normalized"]}
+                for q in c.fy0_quarter_eps]
+    embedded = sum(q["embedded"] for q in quarters)
+    fy0_adj = c.eps_fy0 - embedded
+    growth_adj = 100 * (c.eps_fy1 / fy0_adj - 1) if fy0_adj > 0 else None
+    peg_adj = (c.forward_pe / growth_adj
+               if growth_adj is not None and growth_adj > 0 else None)
+    return OneOffCheck(
+        ticker=c.ticker, quarters=quarters, embedded=embedded,
+        pct_fy0=100 * embedded / c.eps_fy0, eps_fy1=c.eps_fy1, forward_pe=c.forward_pe,
+        eps_fy0_adj=fy0_adj, growth_adj=growth_adj, peg_if_confirmed=peg_adj,
+    )
 
 
 def _entry_timing(c: Company) -> tuple[float | None, float | None, bool]:
@@ -971,13 +1148,15 @@ def _rejection_reasons(
     gaap_profitable: bool, pass_sbc: bool, pass_rule40: bool, pass_ps: bool,
     quality_gate: bool, sbc_pct: float, rule40: float, p_s: float,
     growth: float, peg: float | None, eps_growth: float | None = None,
+    untestable_reason: str | None = None,
 ) -> list[str]:
     """Build a human-readable list of why a name was rejected.
 
     Branches on GAAP profitability — the routing key — not on whether PEG is
     computable: a profitable name lives or dies on Track A (PEG required), an
     unprofitable one on the Track B quality gate. ``eps_growth`` is the consensus
-    growth when PEG was testable (None when untestable).
+    growth when PEG was testable (None when untestable); ``untestable_reason``
+    names a specific cause (the #61 one-off check) instead of the generic text.
     """
     reasons: list[str] = []
     if not pass_rule40:
@@ -994,6 +1173,11 @@ def _rejection_reasons(
             reasons.append(
                 f"PEG failed: consensus EPS growth <= 0 ({eps_growth:.1f}%); "
                 "profitable, Track B barred"
+            )
+        elif peg is None and untestable_reason:
+            reasons.append(
+                f"PEG untestable: {untestable_reason}; profitable name must clear PEG, "
+                "Track B barred"
             )
         elif peg is None:
             reasons.append(

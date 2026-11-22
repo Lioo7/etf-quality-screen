@@ -23,6 +23,18 @@
   before P/S (CNY, EUR reporters); no FX rate means a skip. Converted names show no
   unlock price until #62. Cache schema is `v5`.
 
+- **One-off items in consensus FY0 (#61, D19).** For companies whose street EPS
+  is GAAP EPS (checked per quarter against the statement), street actual minus
+  normalized EPS over the reported FY0 quarters is the one-off amount inside
+  consensus FY0. At 10% of FY0 or more (either sign) PEG is untestable instead of
+  failed or passed. Adjusted-EPS reporters are left alone (their consensus already
+  excludes one-offs). New informational `street_basis` field; `NEEDS_DATA` entries
+  carry a verification task (console and export columns `one_off_*`). US issuers
+  with one currency only. A data problem is noted per name ("one-off check
+  unavailable"); structural causes (mixed basis, non-US, FMP) get one console line
+  and the `one_off_unavailable_cause` export column.
+  Cache schema is `v7`.
+
 ## v0.2.1 — 2026-07-10
 
 Live-fire fixes from the first real v0.2 runs (QQQ / Israel-tech /

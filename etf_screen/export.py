@@ -9,6 +9,7 @@ Markdown header block so an exported file is self-describing.
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from math import isnan
 from pathlib import Path
@@ -29,6 +30,8 @@ COLUMNS = [
     "pct_off_ath", "three_month_return", "hot", "price_history_years",
     "unlock_ps_price", "unlock_peg_price",
     "eps_fy0", "eps_fy1", "estimate_currency", "fy1_analysts",
+    "one_off_eps", "one_off_pct_fy0", "one_off_peg_if_confirmed", "one_off_worth_checking",
+    "one_off_task", "one_off_unavailable_cause", "street_basis",
     "net_income_ttm", "rule40_hist", "consistency", "ipo_date",
     "sector_med_rule40", "sector_med_ps", "sector_med_peg",
     "basis", "sbc_assumed_zero", "manual_override", "reason", "low_confidence",
@@ -108,6 +111,20 @@ def _gm_field(r: Result, attr: str, nd: int = 1):
     return "N/A" if val is None else _num(val, nd)
 
 
+def _one_off_fields(r: Result) -> dict:
+    """#61: the embedded amount when the check fired; the task only on NEEDS_DATA."""
+    o, task = r.one_off, r.one_off_task
+    row = {"one_off_eps": "", "one_off_pct_fy0": "", "one_off_peg_if_confirmed": "",
+           "one_off_worth_checking": "", "one_off_task": ""}
+    if o is not None:
+        row.update(one_off_eps=_num(o.embedded), one_off_pct_fy0=_num(o.pct_fy0, 1))
+    if task is not None:
+        row.update(one_off_peg_if_confirmed=_num(task.peg_if_confirmed),
+                   one_off_worth_checking=task.worth_checking,
+                   one_off_task=json.dumps(task.as_dict()))
+    return row
+
+
 def _result_row(r: Result) -> dict:
     return {
         "ticker": r.ticker, "name": r.name, "sector": r.sector, "track": r.track,
@@ -134,6 +151,9 @@ def _result_row(r: Result) -> dict:
         "eps_fy0": _num(r.company.eps_fy0), "eps_fy1": _num(r.company.eps_fy1),
         "estimate_currency": r.company.estimate_currency or "N/A",
         "fy1_analysts": "N/A" if r.company.fy1_analysts is None else r.company.fy1_analysts,
+        **_one_off_fields(r),
+        "one_off_unavailable_cause": r.one_off_unavailable_cause or "",
+        "street_basis": r.company.street_basis or "N/A",
         "net_income_ttm": _num(r.company.net_income_ttm),
         "rule40_hist": rule40_hist(r), "consistency": consistency_status(r),
         "ipo_date": r.company.ipo_date or "unknown",
@@ -141,7 +161,7 @@ def _result_row(r: Result) -> dict:
         "sector_med_ps": _sector_med(r, "p_s"), "sector_med_peg": _sector_med(r, "peg"),
         "basis": r.basis,
         "sbc_assumed_zero": r.sbc_assumed_zero, "manual_override": r.manual_override,
-        "reason": "; ".join(r.reasons), "low_confidence": "; ".join(r.company.low_confidence),
+        "reason": "; ".join(r.reasons), "low_confidence": "; ".join(r.low_confidence_notes),
         "otc_adr_data_suspect": r.otc_adr_data_suspect,
         "financial_sector_note": r.financial_sector_note or "",
     }

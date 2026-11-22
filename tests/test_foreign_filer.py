@@ -182,13 +182,13 @@ def test_converted_market_cap_hides_the_unlock_prices_but_not_the_verdict():
 
 
 # --- cache round trip -----------------------------------------------------------
-def test_converted_flag_survives_the_cache_and_the_schema_is_v5(tmp_path, monkeypatch):
+def test_converted_flag_survives_the_cache_and_the_schema_is_current(tmp_path, monkeypatch):
     import etf_screen.cache as cache_mod
     from etf_screen.cache import DiskCache
     from etf_screen.providers import MockProvider
 
     monkeypatch.setattr(cache_mod, "CACHE_ROOT", tmp_path)
-    assert "market_cap_converted" in _COMPANY_FIELDS and _CACHE_SCHEMA == "v5"
+    assert "market_cap_converted" in _COMPANY_FIELDS and _CACHE_SCHEMA == "v7"
     cache = DiskCache("mock")
     stored = asdict(replace(MockProvider().fetch("MSFT"), market_cap_converted=True))
     provider = MockProvider(cache=cache)

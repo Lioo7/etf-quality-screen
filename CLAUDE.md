@@ -43,10 +43,10 @@ Flow: `cli.run()` → `constituents.resolve()` / `--tickers` → `provider.fetch
 - **Never fabricate data.** Missing values → skip and report ("could not source"). Sanctioned exceptions are line items absent from a retrieved statement: SBC, goodwill, total debt → 0, flagged. Cash, total assets, total equity are never assumed.
 - **Pre-revenue firewall runs first** (`revenue_ttm <= 0` → `PRE_REVENUE`, before any math).
 - **Status precedence is fixed.** Balance-sheet failure (REJECTED) beats the history gate; then INSUFFICIENT_HISTORY, consistency FAIL, else PASS. A snapshot failer's gates are moot.
-- **WATCHLIST and NEEDS_DATA are not loopholes.** WATCHLIST only when every quality gate passes and valuation is the sole blocker; NEEDS_DATA only when PEG is untestable (consensus EPS missing, ≤ 0 or in another currency), P/S passes and no gate fails (no unlock price). Consensus EPS growth ≤ 0 is a failed PEG: REJECTED, never NEEDS_DATA or WATCHLIST. Neither enters `rank()`.
+- **WATCHLIST and NEEDS_DATA are not loopholes.** WATCHLIST only when every quality gate passes and valuation is the sole blocker; NEEDS_DATA only when PEG is untestable (consensus EPS missing, ≤ 0 or in another currency, or consensus FY0 carries one-off items ≥ 10% of FY0, D19), P/S passes and no gate fails (no unlock price). Consensus EPS growth ≤ 0 is a failed PEG: REJECTED, never NEEDS_DATA or WATCHLIST, unless the D19 one-off check makes PEG untestable. Neither enters `rank()`.
 - **RECENT_IPO is the unconditional final override** (the firewall still wins). Unknown `ipo_date` is never guessed.
 - **Strict vs trend is Track A only**; Track B never changes with the mode. `evaluate()` defaults to `strict`, the CLI to `trend`. `tests/test_consistency.py` pins `strict` on strict cases; keep the pins.
-- **Advisory layers never gate** (sector context, ROIC history, margin profile, entry timing/HOT, EQ capex note, OTC flag, financial note): they must never change `passed`, `track` or rank. `tests/test_sector.py` proves it; never weaken it.
+- **Advisory layers never gate** (sector context, ROIC history, margin profile, entry timing/HOT, EQ capex note, OTC flag, financial note, street basis): they must never change `passed`, `track` or rank. `tests/test_sector.py` proves it; never weaken it.
 - A short or empty shortlist is expected: **do not loosen thresholds to populate the table.**
 
 ## Conventions
