@@ -83,6 +83,15 @@ PS_GUARDRAIL_FACTOR = 0.5  # P/S must be <= factor * revenue growth%
 # One-off items embedded in consensus FY0 EPS (#61, D19): at or above this share of
 # EPS_FY0 (either sign) the PEG test is unadministrable, not failed.
 ONE_OFF_FY0_MAX = 0.10
+#: Notes the data layer adds when the #61 check could not run (D19). Structural causes
+#: (by design, the same for every such name) are not shown per name: one console
+#: summary line and the export column carry them. Data-problem causes stay per name.
+ONE_OFF_UNAVAILABLE = "one-off check unavailable ({})"
+MIXED_BASIS_CAUSE = "street EPS basis mixed (GAAP and adjusted quarters)"
+NON_US_CAUSE = "non-US issuer"
+FMP_CAUSE = "not supported by FMP"
+ONE_OFF_STRUCTURAL = {MIXED_BASIS_CAUSE: "mixed basis", NON_US_CAUSE: "non-US",
+                      FMP_CAUSE: "FMP"}
 
 # --- trend-mode consistency (Track A only; strict mode is the all-years rule) ---
 TREND_FLOOR = 25.0      # a windowed Rule-of-40 below this is "sub-floor"
@@ -530,13 +539,26 @@ class Result:
         return self.one_off if self.needs_data else None
 
     @property
+    def one_off_unavailable_cause(self) -> str | None:
+        """Why the #61 check could not run (from the data layer's note), or None."""
+        head, tail = ONE_OFF_UNAVAILABLE.split("{}")
+        for note in self.company.low_confidence:
+            if note.startswith(head) and note.endswith(tail):
+                return note[len(head):len(note) - len(tail)]
+        return None
+
+    @property
     def low_confidence_notes(self) -> list[str]:
-        """``company.low_confidence`` for display; a fired one-off check replaces the
-        generic #53 EPS-decline note with its specific reason."""
-        notes = self.company.low_confidence
+        """``company.low_confidence`` for display. A fired one-off check replaces the
+        generic #53 EPS-decline note with its specific reason; a structural "one-off
+        check unavailable" cause is summarized once per run, not repeated per name."""
+        drop = set()
         if self.one_off is not None:
-            notes = [n for n in notes if n != EPS_DECLINE_NOTE]
-        return notes
+            drop.add(EPS_DECLINE_NOTE)
+        cause = self.one_off_unavailable_cause
+        if cause in ONE_OFF_STRUCTURAL:
+            drop.add(ONE_OFF_UNAVAILABLE.format(cause))
+        return [n for n in self.company.low_confidence if n not in drop]
 
     @property
     def ps_headroom(self) -> float:
@@ -933,9 +955,10 @@ class OneOffCheck:
     def verify(self) -> str:
         parts = [f"{q['quarter_end']} {_signed_usd(q['embedded'])}/share"
                  for q in self.quarters if round(q["embedded"], 2) != 0]
-        return ("in each quarter's earnings release or 10-Q, find the non-operating / "
-                "other income line (e.g. gains on equity securities) and confirm the "
-                "after-tax amount per diluted share: " + "; ".join(parts))
+        return ("find the one-off items in that quarter's earnings release or 10-Q "
+                "(e.g. gains or losses on investments, impairments, restructuring or "
+                "merger charges, gains on asset sales) and confirm the after-tax amount "
+                "per diluted share: " + "; ".join(parts))
 
     @property
     def override_json(self) -> str:

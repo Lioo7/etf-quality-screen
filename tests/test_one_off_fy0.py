@@ -148,8 +148,9 @@ def test_verification_task_fields():
     assert t.eps_fy0_adj == pytest.approx(11.23)
     assert t.growth_adj == pytest.approx(100 * (14.89 / 11.23 - 1))
     assert t.would_pass and t.worth_checking
-    assert "earnings release or 10-Q" in t.verify
-    assert "non-operating" in t.verify and "+$6.49/share" in t.verify
+    assert t.verify.startswith("find the one-off items in that quarter's earnings release "
+                               "or 10-Q (e.g. gains or losses on investments, impairments,")
+    assert "after-tax amount per diluted share: " in t.verify and "+$6.49/share" in t.verify
     json.dumps(t.as_dict())                  # JSON-serializable
 
 
@@ -434,3 +435,44 @@ def test_street_basis_is_informational_and_exported():
                                                               True)}
     assert build_rows(rows[2:3], [], {})[0]["street_basis"] == "adjusted"
     assert build_rows(rows[:1], [], {})[0]["street_basis"] == "N/A"
+
+
+# --- note noise: structural causes are summarized, data problems stay per name ----
+@pytest.mark.parametrize("cause,shown", [
+    ("street EPS basis mixed (GAAP and adjusted quarters)", False),
+    ("non-US issuer", False),
+    ("not supported by FMP", False),
+    ("statement inconsistent: diluted EPS does not match net income / shares, 2026-09-30",
+     True),
+    ("normalized income not reported", True),
+    ("GAAP diluted EPS not reported", True),
+    ("street actual EPS not reported", True),
+    ("no earnings history", True),
+    ("quarters not aligned to the fiscal year", True),
+])
+def test_per_name_note_only_for_data_problems(cause, shown):
+    note = f"one-off check unavailable ({cause})"
+    r = evaluate(replace(_co(10.0, 13.0), low_confidence=["other note", note]))
+    assert r.one_off_unavailable_cause == cause
+    assert (note in r.low_confidence_notes) is shown
+    assert "other note" in r.low_confidence_notes
+    assert note in r.company.low_confidence           # stored data unchanged
+    row = build_rows([r], [], {})[0]
+    assert row["one_off_unavailable_cause"] == cause
+    assert (note in row["low_confidence"]) is shown
+
+
+def test_console_summary_line_for_structural_causes():
+    from etf_screen.cli import one_off_not_run_line
+
+    def r(cause):
+        notes = [] if cause is None else [f"one-off check unavailable ({cause})"]
+        return evaluate(replace(_co(10.0, 13.0), low_confidence=notes))
+    results = [r("street EPS basis mixed (GAAP and adjusted quarters)"),
+               r("street EPS basis mixed (GAAP and adjusted quarters)"),
+               r("non-US issuer"), r("not supported by FMP"),
+               r("no earnings history"), r(None)]
+    assert one_off_not_run_line(results) == (
+        "one-off check not run for 4 names (mixed basis 2, non-US 1, FMP 1): see export")
+    assert one_off_not_run_line(results[4:]) is None
+    assert build_rows(results[5:], [], {})[0]["one_off_unavailable_cause"] == ""

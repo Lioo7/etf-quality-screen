@@ -25,7 +25,8 @@ from dataclasses import asdict
 from datetime import date, timedelta
 
 from .cache import DiskCache
-from .screen import EPS_DECLINE_NOTE, AnnualPeriod, Company
+from .screen import (EPS_DECLINE_NOTE, FMP_CAUSE, MIXED_BASIS_CAUSE, NON_US_CAUSE,
+                     ONE_OFF_UNAVAILABLE, AnnualPeriod, Company)
 
 # Fields persisted to / restored from the disk cache.
 _COMPANY_FIELDS = (
@@ -610,7 +611,7 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     fy0_quarter_eps, street_basis, one_off_gap = _yf_fy0_quarter_eps(
         earnings_history, q_inc, a_inc, info, est_ccy, date.today())
     if one_off_gap and net_income_ttm > 0 and forward_eps_growth is not None:
-        low_conf.append(f"one-off check unavailable ({one_off_gap})")
+        low_conf.append(ONE_OFF_UNAVAILABLE.format(one_off_gap))
 
     # Operating income (EBIT) for ROIC, on the SAME basis as revenue. Absent ->
     # NaN so ROIC is treated as not-computable (advisory), never a false reject.
@@ -1037,7 +1038,7 @@ def _yf_fy0_quarter_eps(earnings_history, q_inc, a_inc, info, est_ccy, today: da
             or "epsActual" not in earnings_history.columns):
         return gap("no earnings history")
     if (info.get("country") or "") != "United States":
-        return gap("non-US issuer")
+        return gap(NON_US_CAUSE)
     stmt_ccy, price_ccy = info.get("financialCurrency"), info.get("currency")
     if not (stmt_ccy and price_ccy and est_ccy) or len({stmt_ccy, price_ccy, est_ccy}) > 1:
         return gap("currency mismatch or unverified")
@@ -1081,7 +1082,7 @@ def _yf_fy0_quarter_eps(earnings_history, q_inc, a_inc, info, est_ccy, today: da
     if on_gaap == {False}:
         return None, "adjusted", None
     if on_gaap == {True, False}:
-        return None, "mixed", "street EPS basis mixed (GAAP and adjusted quarters)"
+        return None, "mixed", MIXED_BASIS_CAUSE
     quarters = []
     for d, col, actual, _ in rows:
         if col not in lines["norm"]:
@@ -1356,7 +1357,7 @@ class FMPProvider(DataProvider):
             price, price_ccy, eps_fy0, eps_fy1, est_ccy, fy1_analysts)
         low_conf.extend(peg_notes)
         if net_income_ttm > 0 and forward_eps_growth is not None:  # #61 is Yahoo-only
-            low_conf.append("one-off check unavailable (not supported by FMP)")
+            low_conf.append(ONE_OFF_UNAVAILABLE.format(FMP_CAUSE))
 
         return Company(
             ticker=ticker, revenue_ttm=revenue_ttm, revenue_ttm_prior=revenue_prior,

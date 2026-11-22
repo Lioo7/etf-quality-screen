@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import sys
 import time
+from collections import Counter
 from dataclasses import dataclass
 from datetime import date
 from math import isnan
@@ -26,8 +27,8 @@ from .constituents import holdings_from_csv, resolve, tickers_from_file
 from .overrides import apply_override, company_from_override, load_overrides
 from .providers import DEFAULT_FETCH_TIMEOUT, PROVIDERS, DataProvider, DataUnavailable
 from .screen import (
-    PEG_MAX, Result, ScreenStatus, annotate_sector_context, evaluate, peg_untestable_reason,
-    rank,
+    ONE_OFF_STRUCTURAL, PEG_MAX, Result, ScreenStatus, annotate_sector_context, evaluate,
+    peg_untestable_reason, rank,
 )
 
 
@@ -328,6 +329,10 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
             if r.one_off_task is not None:
                 _print_one_off_task(r.one_off_task)
 
+    line = one_off_not_run_line(results)
+    if line:
+        print(f"\n{line}")
+
     if rejected:
         print("\nWhy names were rejected:")
         for r in rejected:
@@ -492,6 +497,17 @@ def _gm(r: Result) -> str:
 
 def _short(s: str, n: int = 24) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def one_off_not_run_line(results: list[Result]) -> str | None:
+    """One summary line for the structural reasons the #61 check did not run (D19)."""
+    kinds = Counter(ONE_OFF_STRUCTURAL[c] for r in results
+                    if (c := r.one_off_unavailable_cause) in ONE_OFF_STRUCTURAL)
+    if not kinds:
+        return None
+    parts = ", ".join(f"{k} {kinds[k]}" for k in ("mixed basis", "non-US", "FMP"))
+    return (f"one-off check not run for {sum(kinds.values())} names ({parts}): "
+            f"see export")
 
 
 def _print_one_off_task(o) -> None:
