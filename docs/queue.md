@@ -33,9 +33,9 @@ build = /issue-build N
 | 24 | #24 | issue |  |
 | 25 | #15 | plan+build |  |
 | 26 | #29 | plan+build |  |
-| 27 | #68 | issue | #21 |
-| 28 | #32 | plan+build | #29, #9, #15 |
-| 29 | #21 | issue | #16 |
+| 27 | #32 | plan+build | #29, #9, #15 |
+| 28 | #21 | issue | #16 |
+| 29 | #68 | issue | #21 |
 | 30 | #22 | issue | #16 |
 | 31 | #23 | build |  |
 | 32 | #51 | plan+build | #23 |
