@@ -55,3 +55,6 @@ No license (all rights reserved) for now, to keep commercial options open. Openi
 
 ## D16 — Sentiment, moving averages and cost basis are context, not signals (refines D11 and D12, 2026-11-21)
 VIX, breadth and index drawdown are recorded in snapshots (#16), never used as signals (fear/greed indices show weak, unstable predictive power). Moving-average distance is an informational entry-timing column only (#36). The user's cost basis is never an input to screening or decision rules (disposition effect, Odean 1998). Valuation against a company's own history belongs to #29.
+
+## D17 — Date format (2026-11-22)
+ISO 8601 (YYYY-MM-DD) everywhere in code, data, caches, exports, file names and docs: unambiguous across locales, sorts chronologically, and parses natively. Human-facing report views (HTML, #49) display '10 Jul 2026'. Never use numeric DD/MM or MM/DD.
