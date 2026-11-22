@@ -45,7 +45,9 @@ _COMPANY_FIELDS = (
 # Bumped when a cached field changes meaning, so a same-day entry written by older
 # code is refetched instead of misread. v2 (#6): forward_eps_growth None = missing
 # (the old 0.0 sentinel would now read as negative consensus growth -> REJECTED).
-_CACHE_SCHEMA = "v2"
+# v3 (#46): pre-#46 entries hold an unconverted (untestable) forward_pe for
+# estimates in another currency than the price.
+_CACHE_SCHEMA = "v3"
 
 
 class DataUnavailable(Exception):
