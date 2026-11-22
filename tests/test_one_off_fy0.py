@@ -227,9 +227,20 @@ TODAY = date(2026, 11, 22)
 US = {"country": "United States", "currency": "USD", "financialCurrency": "USD"}
 
 
-def _inc(cols, ni, shares, label="Normalized Income"):
-    return pd.DataFrame({pd.Timestamp(c): {label: n, "Diluted Average Shares": s}
-                         for c, n, s in zip(cols, ni, shares)})
+def _inc(cols, normalized, shares, gaap=None, ni=None, unusual=None,
+         norm_label="Normalized Income"):
+    """Quarterly income frame. GAAP diluted EPS defaults to the GOOGL-like street
+    actuals (a GAAP-basis reporter) and net income to EPS x shares (consistent)."""
+    gaap = gaap if gaap is not None else GAAP_EPS[:len(cols)]
+    ni = ni if ni is not None else [g * s for g, s in zip(gaap, shares)]
+    frame = {}
+    for i, c in enumerate(cols):
+        col = {norm_label: normalized[i], "Diluted Average Shares": shares[i],
+               "Diluted EPS": gaap[i], "Net Income Common Stockholders": ni[i]}
+        if unusual is not None:
+            col["Total Unusual Items"] = unusual[i]
+        frame[pd.Timestamp(c)] = col
+    return pd.DataFrame(frame)
 
 
 def _eh(dates, actual):
@@ -242,20 +253,22 @@ def _annual(*cols):
 
 
 QCOLS = ["2026-09-30", "2026-06-30", "2026-03-31", "2025-12-31", "2025-09-30"]
+GAAP_EPS = [2.12, 9.11, 5.11, 2.82, 2.87]          # newest first, = street (GAAP basis)
+NORMALIZED = [33.85, 32.23, 32.71, 32.44, 26.46]
+SHARES = [12.368, 12.309, 12.238, 12.228, 12.203]
 
 
 def _source(eh=None, q_inc=None, a_inc=None, info=US, est_ccy="USD"):
     eh = _eh(["2025-12-31", "2026-03-31", "2026-06-30", "2026-09-30"],
              [2.82, 5.11, 9.11, 2.12]) if eh is None else eh
-    q_inc = _inc(QCOLS, [33.85, 32.23, 32.71, 32.44, 26.46],
-                 [12.368, 12.309, 12.238, 12.228, 12.203]) if q_inc is None else q_inc
+    q_inc = _inc(QCOLS, NORMALIZED, SHARES) if q_inc is None else q_inc
     a_inc = _annual("2025-12-31", "2024-12-31") if a_inc is None else a_inc
     return _yf_fy0_quarter_eps(eh, q_inc, a_inc, info, est_ccy, TODAY)
 
 
 def test_december_year_takes_the_quarters_after_the_last_annual_column():
-    quarters, cause = _source()
-    assert cause is None
+    quarters, basis, cause = _source()
+    assert cause is None and basis == "gaap"
     assert [q["quarter_end"] for q in quarters] == ["2026-03-31", "2026-06-30",
                                                     "2026-09-30"]
     assert quarters[0]["eps_actual"] == 5.11
@@ -263,22 +276,85 @@ def test_december_year_takes_the_quarters_after_the_last_annual_column():
 
 
 def test_june_year_has_one_fy0_quarter():
-    quarters, cause = _source(a_inc=_annual("2026-06-30", "2025-06-30"))
+    quarters, basis, cause = _source(a_inc=_annual("2026-06-30", "2025-06-30"))
     assert cause is None and [q["quarter_end"] for q in quarters] == ["2026-09-30"]
 
 
 def test_52_week_year_matches_dates_within_ten_days():
     q_inc = _inc(["2026-10-26", "2026-07-27", "2026-04-26", "2026-01-25"],
-                 [60.0, 53.2, 58.3, 43.0], [24.19, 24.29, 24.39, 24.43])
+                 [60.0, 53.2, 58.3, 43.0], [24.19, 24.29, 24.39, 24.43],
+                 gaap=[2.68, 2.22, 1.87, 1.62])
     eh = _eh(["2026-01-31", "2026-04-30", "2026-07-31", "2026-10-31"], [1.62, 1.87, 2.22, 2.68])
-    quarters, cause = _source(eh=eh, q_inc=q_inc, a_inc=_annual("2026-01-25"))
+    quarters, basis, cause = _source(eh=eh, q_inc=q_inc, a_inc=_annual("2026-01-25"))
     assert cause is None and len(quarters) == 3
     assert quarters[-1]["eps_actual"] == 2.68
 
 
 def test_annual_just_reported_means_no_fy0_quarter():
-    quarters, cause = _source(a_inc=_annual("2026-09-30", "2025-09-30"))
-    assert quarters == [] and cause is None
+    quarters, basis, cause = _source(a_inc=_annual("2026-09-30", "2025-09-30"))
+    assert quarters == [] and cause is None and basis == "unavailable"
+
+
+# --- street basis (D19) -------------------------------------------------------
+def test_street_within_two_percent_or_two_cents_is_gaap():
+    # 5.11 -> 5.20 (1.7%), 9.11 -> 9.11, 2.12 -> 2.14 (2 cents)
+    eh = _eh(["2026-03-31", "2026-06-30", "2026-09-30"], [5.20, 9.11, 2.14])
+    assert _source(eh=eh)[1] == "gaap"
+
+
+def test_adjusted_reporter_never_fires_and_gets_no_note():
+    # ADBE-like: street non-GAAP EPS is ~1.4 above GAAP every quarter (SBC and
+    # amortization add-backs, which normalized income still carries).
+    eh = _eh(["2026-03-31", "2026-06-30", "2026-09-30"], [6.06, 10.5, 3.55])
+    assert _source(eh=eh) == (None, "adjusted", None)
+
+
+def test_mixed_basis_is_unavailable():
+    eh = _eh(["2026-03-31", "2026-06-30", "2026-09-30"], [5.11, 9.11, 3.55])
+    quarters, basis, cause = _source(eh=eh)
+    assert quarters is None and basis == "mixed" and "mixed" in cause
+
+
+def test_share_count_unit_error_is_inconsistent():
+    # AJG-like: Q3 diluted shares 1,000x too small -> normalized EPS would be ~1,600.
+    shares = [0.012368] + SHARES[1:]
+    q_inc = _inc(QCOLS, NORMALIZED, shares, ni=[g * s for g, s in zip(GAAP_EPS, SHARES)])
+    quarters, basis, cause = _source(q_inc=q_inc)
+    assert quarters is None and basis == "unavailable"
+    assert cause == ("statement inconsistent: diluted EPS does not match net income / "
+                     "shares, 2026-09-30")
+
+
+def test_normalized_income_unexplained_by_unusual_items_is_inconsistent():
+    # Net income positive, normalized income negative, no Total Unusual Items row.
+    norm = [-0.6] + NORMALIZED[1:]
+    quarters, basis, cause = _source(q_inc=_inc(QCOLS, norm, SHARES))
+    assert quarters is None and "normalized income not explained" in cause
+
+
+def test_large_unusual_items_explain_the_gap():
+    # A real one-off loss: NI 26.2, normalized 60 (gap 33.8 > |NI|), unusual -40.
+    norm = [60.0] + NORMALIZED[1:]
+    unusual = [-40.0, 0.0, 0.0, 0.0, 0.0]
+    quarters, basis, cause = _source(q_inc=_inc(QCOLS, norm, SHARES, unusual=unusual))
+    assert basis == "gaap" and cause is None
+
+
+def test_cme_like_is_caught_by_the_basis_rule_not_the_normalized_sanity():
+    # CME 2026: normalized income negative while NI ~$1B, but Morningstar's Total
+    # Unusual Items (~$1.4B/qtr) is big enough to "explain" it, so the sanity rule
+    # passes; street EPS differs from GAAP every quarter -> adjusted, no fire.
+    cols, shares = QCOLS[:3], [0.3586, 0.3613, 0.3632]
+    gaap, ni = [2.89, 2.88, 3.18], [1.0369, 1.0418, 1.1543]
+    q_inc = _inc(cols, [-0.048, -0.0805, 0.0929], shares, gaap=gaap, ni=ni,
+                 unusual=[1.4181, 1.4297, 1.3893])
+    eh = _eh(["2026-03-31", "2026-06-30", "2026-09-30"], [3.36, 2.99, 3.02])
+    assert _source(eh=eh, q_inc=q_inc) == (None, "adjusted", None)
+
+
+def test_missing_net_income_skips_the_consistency_checks_only():
+    q_inc = _inc(QCOLS, NORMALIZED, SHARES, ni=[float("nan")] * 5)
+    assert _source(q_inc=q_inc)[1] == "gaap"
 
 
 @pytest.mark.parametrize("kwargs,cause", [
@@ -286,10 +362,12 @@ def test_annual_just_reported_means_no_fy0_quarter():
     ({"a_inc": _annual("2025-06-30")}, "latest annual statement older than 15 months"),
     ({"a_inc": _annual("2024-12-31")}, "latest annual statement older than 15 months"),
     ({"a_inc": _annual("2025-09-30")}, "quarters not aligned to the fiscal year"),
-    ({"q_inc": _inc(QCOLS, [33.85, float("nan"), 32.71, 32.44, 26.46], [12.0] * 5)},
+    ({"q_inc": _inc(QCOLS, [33.85, float("nan"), 32.71, 32.44, 26.46], SHARES)},
      "normalized income not reported"),
-    ({"q_inc": _inc(QCOLS, [33.85] * 5, [12.0] * 5, label="Net Income")},
+    ({"q_inc": _inc(QCOLS, NORMALIZED, SHARES, norm_label="Net Income")},
      "normalized income not reported"),
+    ({"q_inc": _inc(QCOLS, NORMALIZED, SHARES, gaap=[float("nan")] + GAAP_EPS[1:])},
+     "GAAP diluted EPS not reported"),
     ({"eh": _eh(["2026-03-31", "2026-09-30"], [5.11, 2.12])},
      "quarters not aligned to the fiscal year"),
     ({"eh": _eh(["2026-03-31", "2026-06-30", "2026-09-30"], [5.11, float("nan"), 2.12])},
@@ -299,17 +377,16 @@ def test_annual_just_reported_means_no_fy0_quarter():
     ({"info": {**US, "country": "United Kingdom"}}, "non-US issuer"),
 ])
 def test_unavailable_inputs(kwargs, cause):
-    quarters, got = _source(**kwargs)
-    assert quarters is None and got == cause
+    assert _source(**kwargs) == (None, "unavailable", cause)
 
 
 def test_same_currency_adr_like_case_never_fires():
     # 6 ordinary shares per ADS, everything in USD: street EPS per ADS is 6x the
     # per-ordinary normalized EPS, an ~83% false "one-off" without the issuer rule.
-    q_inc = _inc(QCOLS, [6.0] * 5, [10.0] * 5)                    # 0.60 / ordinary
+    q_inc = _inc(QCOLS, [6.0] * 5, [10.0] * 5, gaap=[3.6] * 5)   # 0.60 / ordinary
     eh = _eh(["2026-03-31", "2026-06-30", "2026-09-30"], [3.6] * 3)  # 3.60 / ADS
-    quarters, cause = _source(eh=eh, q_inc=q_inc,
-                              info={**US, "country": "United Kingdom"})
+    quarters, basis, cause = _source(eh=eh, q_inc=q_inc,
+                                     info={**US, "country": "United Kingdom"})
     assert quarters is None and cause == "non-US issuer"
 
 
@@ -328,10 +405,11 @@ def test_unavailable_note_only_for_profitable_names_with_testable_peg():
     assert not any("one-off" in n for n in _yf(None).low_confidence)   # PEG untestable
 
 
-def test_extract_populates_the_field_and_caches_it():
-    assert "fy0_quarter_eps" in _COMPANY_FIELDS and _CACHE_SCHEMA == "v6"
+def test_extract_populates_the_fields_and_caches_them():
+    assert "fy0_quarter_eps" in _COMPANY_FIELDS and _CACHE_SCHEMA == "v7"
+    assert "street_basis" in _COMPANY_FIELDS
     c = _yf(_estimates(20.0, 24.0))
-    assert c.fy0_quarter_eps is None
+    assert c.fy0_quarter_eps is None and c.street_basis == "unavailable"
     stored = replace(c, fy0_quarter_eps=GOOGL_LIKE_QUARTERS)
     cached = asdict(stored)
     from etf_screen.screen import Company
@@ -342,6 +420,17 @@ def test_extract_populates_the_field_and_caches_it():
 def test_fmp_notes_the_check_as_unavailable(monkeypatch):
     from tests.test_foreign_filer import _FMP_EST, _fmp_provider
     c = _fmp_provider(monkeypatch, _FMP_EST).fetch("FMP")
-    assert c.fy0_quarter_eps is None
+    assert c.fy0_quarter_eps is None and c.street_basis == "unavailable"
     assert c.net_income_ttm > 0 and c.forward_eps_growth is not None
     assert "one-off check unavailable (not supported by FMP)" in c.low_confidence
+
+
+def test_street_basis_is_informational_and_exported():
+    assert "street_basis" in COLUMNS
+    base = _co(10.0, 13.0)
+    rows = [evaluate(replace(base, street_basis=b)) for b in
+            (None, "gaap", "adjusted", "mixed", "unavailable")]
+    assert {(r.status, r.track, r.passed) for r in rows} == {(ScreenStatus.PASS, "Track A",
+                                                              True)}
+    assert build_rows(rows[2:3], [], {})[0]["street_basis"] == "adjusted"
+    assert build_rows(rows[:1], [], {})[0]["street_basis"] == "N/A"

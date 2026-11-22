@@ -59,7 +59,8 @@ sector context (``sector_medians()``, ``annotate_sector_context()``), ROIC histo
 ``pricing_power`` / ``gm_not_applicable``), entry timing (``_entry_timing()`` ->
 ``pct_off_ath``, ``three_month_return``, ``HOT``), the EQ capex-intensity note
 (``eq_capex_intensity``), the OTC ADR flag (``otc_adr_data_suspect``) and the Financial
-Services asterisk (``financial_sector_note``). Per-year ``AnnualPeriod`` fields that are
+Services asterisk (``financial_sector_note``) and the street-EPS basis
+(``Company.street_basis``, D19). Per-year ``AnnualPeriod`` fields that are
 missing skip that year for that metric only; they never truncate the consistency run,
 which keys solely on revenue/OCF/capex/SBC.
 """
@@ -319,6 +320,11 @@ class Company:
     # normalized income / diluted shares. None = the one-off check could not be
     # sourced (never guessed); [] = no FY0 quarter reported yet.
     fy0_quarter_eps: list[dict] | None = None
+    # Basis of the street actual EPS over those quarters (D19), INFORMATIONAL only:
+    # "gaap" (matches statement diluted EPS; the check runs), "adjusted" (the
+    # company's non-GAAP EPS; one-offs excluded by construction, no check),
+    # "mixed" or "unavailable". None = unknown (provider does not classify).
+    street_basis: str | None = None
     # Annual statement history (OLDEST -> NEWEST) for the multi-year consistency
     # gate. Empty when the data layer could not source a contiguous run.
     history: list[AnnualPeriod] = field(default_factory=list)

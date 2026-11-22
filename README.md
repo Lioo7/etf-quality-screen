@@ -151,7 +151,8 @@ Boundaries: a *computable* failed PEG keeps its normal fate
 (`WATCHLIST`/`REJECTED`); consensus EPS growth ≤ 0 is a failed PEG and plain
 `REJECTED` (no price fixes shrinking earnings, so never `WATCHLIST`), unless
 consensus FY0 carries one-off items of at least 10% of FY0 (street actual minus
-normalized EPS over the reported FY0 quarters, US issuers only; D19): then PEG
+normalized EPS over the reported FY0 quarters, for US issuers whose street EPS is
+GAAP EPS; adjusted-EPS consensus excludes one-offs already; D19): then PEG
 is untestable whatever the growth sign, and the `NEEDS_DATA` entry lists what to
 verify, the PEG if confirmed ("not worth checking" when it would still fail)
 and the overrides.json lines to paste; a name that also fails P/S or any quality gate stays

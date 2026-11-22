@@ -39,7 +39,7 @@ _COMPANY_FIELDS = (
     "sbc_assumed_zero", "overridden_fields", "sector", "industry", "ipo_date",
     "current_price", "ath_price", "price_3mo_ago", "price_history_years",
     "eps_fy0", "eps_fy1", "estimate_currency", "fy1_analysts",
-    "market_cap_converted", "fy0_quarter_eps", "history",
+    "market_cap_converted", "fy0_quarter_eps", "street_basis", "history",
 )
 
 # Bumped when a cached field changes meaning, so a same-day entry written by older
@@ -51,8 +51,10 @@ _COMPANY_FIELDS = (
 # and statement-currency market cap / annual basis), so same-day v4 entries may come
 # from either code. v5 (#53 + #58): entries carry the note, the converted market cap
 # and the annual-basis fallback. v6 (#61): entries carry fy0_quarter_eps; a v5 entry
-# would read as "check unavailable" and miss a one-off-distorted FY0.
-_CACHE_SCHEMA = "v6"
+# would read as "check unavailable" and miss a one-off-distorted FY0. v7 (#61 revision
+# 2): fy0_quarter_eps is set only on a GAAP street basis, plus street_basis; a v6 entry
+# from the first #61 commit holds quarters for adjusted reporters (false one-offs).
+_CACHE_SCHEMA = "v7"
 
 #: Added to ``low_confidence`` when a market cap was currency-converted (#58): the
 #: unlock prices use market cap / shares and are not shown until #62 reworks them.
@@ -605,7 +607,7 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
         low_conf.append(decline)
     # One-off items inside consensus FY0 (#61): raw per-quarter pairs only; screen.py
     # decides. The "unavailable" note matters only where PEG decides the verdict.
-    fy0_quarter_eps, one_off_gap = _yf_fy0_quarter_eps(
+    fy0_quarter_eps, street_basis, one_off_gap = _yf_fy0_quarter_eps(
         earnings_history, q_inc, a_inc, info, est_ccy, date.today())
     if one_off_gap and net_income_ttm > 0 and forward_eps_growth is not None:
         low_conf.append(f"one-off check unavailable ({one_off_gap})")
@@ -685,6 +687,7 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
         price_3mo_ago=price_3mo_ago, price_history_years=price_history_years,
         eps_fy0=eps_fy0, eps_fy1=eps_fy1, estimate_currency=est_ccy,
         fy1_analysts=fy1_analysts, fy0_quarter_eps=fy0_quarter_eps,
+        street_basis=street_basis,
         history=_annual_history(a_inc, a_cf, a_bal),
     )
 
@@ -958,15 +961,24 @@ def _yf_earnings_history(tk):
 
 
 # Morningstar quarterly-income labels (Yahoo's 2026 dataset). "Normalized Income" is net
-# income excluding unusual items, after their tax effect. No fallback label: Net Income
-# would hide exactly the one-offs this check measures. Not derived from Total Unusual
-# Items when NaN: on AMZN Q2 2026 those rows are NaN too (#61 PR).
+# income excluding unusual items, after their tax effect. It still carries SBC and
+# amortization, so it is NOT the street's adjusted EPS (D19). No fallback label: Net
+# Income would hide exactly the one-offs this check measures. Not derived from Total
+# Unusual Items when NaN: on AMZN Q2 2026 those rows are NaN too (#61 PR).
 _NORMALIZED_INCOME = ["Normalized Income"]
 _DILUTED_AVG_SHARES = ["Diluted Average Shares"]
+_DILUTED_EPS = ["Diluted EPS"]
+_NI_COMMON = ["Diluted NI Availto Com Stockholders", "Net Income Common Stockholders",
+              "Net Income"]
+_UNUSUAL_ITEMS = ["Total Unusual Items"]
 #: An FY0 quarter matches a statement column within this many days (52/53-week years).
 FY0_QUARTER_MATCH_DAYS = 10
 #: The newest annual column anchors FY0 only when it is at most ~15 months old.
 FY0_ANNUAL_MAX_AGE_DAYS = 457
+#: Street actual EPS "is" the GAAP diluted EPS within max($0.02, 2%) (D19).
+STREET_GAAP_TOLERANCE = 0.02
+#: Statement self-consistency: diluted EPS vs net income / shares, max($0.02, 5%).
+EPS_CONSISTENCY_TOLERANCE = 0.05
 
 
 def _as_date(x) -> date | None:
@@ -976,31 +988,65 @@ def _as_date(x) -> date | None:
         return None
 
 
+def _close(a: float, b: float, rel: float) -> bool:
+    return abs(a - b) <= max(0.02, rel * abs(b))
+
+
+def _quarter_inconsistent(gaap_eps, ni, normalized, shares, unusual) -> str | None:
+    """Why one quarter's statement lines contradict each other, or None (D19).
+
+    Checked only on the lines present: a missing line is not a contradiction. A share
+    count off by a unit (AJG Q3 2026: 1,000x too small) breaks EPS vs NI / shares;
+    normalized income far from net income needs Total Unusual Items to explain it
+    (at least half the gap, since the items are pre-tax).
+    """
+    if ni is not None and shares:
+        if not _close(ni / shares, gaap_eps, EPS_CONSISTENCY_TOLERANCE):
+            return "diluted EPS does not match net income / shares"
+    if ni is not None and normalized is not None:
+        gap = abs(ni - normalized)
+        if ((ni > 0 and normalized <= 0) or gap > abs(ni)) and not (
+                unusual is not None and abs(unusual) >= 0.5 * gap):
+            return "normalized income not explained by unusual items"
+    return None
+
+
 def _yf_fy0_quarter_eps(earnings_history, q_inc, a_inc, info, est_ccy, today: date):
-    """``(quarters, None)`` or ``(None, cause)`` for the #61 one-off check.
+    """``(quarters, street_basis, cause)`` for the #61 one-off check (D19).
 
     FY0 quarters are those ending after the newest annual statement column, not
-    ``info.lastFiscalYearEnd`` (stale for NVDA in 2026-11). Each is a dict
-    ``{quarter_end, eps_actual, eps_normalized}``: street actual EPS (``epsActual``)
-    and normalized income / diluted average shares from the same quarter's column.
+    ``info.lastFiscalYearEnd`` (stale for NVDA in 2026-11). Each quarter's street
+    actual (``epsActual``) is compared with the statement's GAAP diluted EPS:
+
+    * every quarter matches -> ``"gaap"``: consensus includes the one-offs, so the
+      quarters come back as ``{quarter_end, eps_actual, eps_normalized}`` dicts;
+    * every quarter differs -> ``"adjusted"``: the street figure is the company's
+      non-GAAP EPS, which excludes one-offs by construction -> ``(None, .., None)``,
+      no note (normalized EPS still carries SBC and amortization, so comparing it
+      with adjusted EPS would measure recurring add-backs, not one-offs);
+    * otherwise ``"mixed"`` or ``"unavailable"`` with a cause, never a partial sum.
+
     US issuers only with statement = estimate = price currency: an ADR's street EPS
-    is per ADS while statement EPS is per ordinary share (a 1:6 ADR would show an
-    ~83% false one-off even in USD). Any gap returns a cause, never a partial sum.
+    is per ADS while statement EPS is per ordinary share. No FY0 quarter reported
+    yet -> ``([], "unavailable", None)``: nothing is embedded.
     """
+    def gap(cause):
+        return None, "unavailable", cause
+
     if (earnings_history is None or getattr(earnings_history, "empty", True)
             or "epsActual" not in earnings_history.columns):
-        return None, "no earnings history"
+        return gap("no earnings history")
     if (info.get("country") or "") != "United States":
-        return None, "non-US issuer"
+        return gap("non-US issuer")
     stmt_ccy, price_ccy = info.get("financialCurrency"), info.get("currency")
     if not (stmt_ccy and price_ccy and est_ccy) or len({stmt_ccy, price_ccy, est_ccy}) > 1:
-        return None, "currency mismatch or unverified"
+        return gap("currency mismatch or unverified")
     annual = [d for d in map(_as_date, a_inc.columns if a_inc is not None else []) if d]
     if not annual:
-        return None, "no annual statement to anchor the fiscal year"
+        return gap("no annual statement to anchor the fiscal year")
     fy_end = max(annual)
     if (today - fy_end).days > FY0_ANNUAL_MAX_AGE_DAYS:
-        return None, "latest annual statement older than 15 months"
+        return gap("latest annual statement older than 15 months")
     cutoff = fy_end + timedelta(days=15)
     cols = [(d, c) for c in (q_inc.columns if q_inc is not None else [])
             if (d := _as_date(c)) and d > cutoff]
@@ -1008,24 +1054,43 @@ def _yf_fy0_quarter_eps(earnings_history, q_inc, a_inc, info, est_ccy, today: da
                                              earnings_history["epsActual"])
                       if (d := _as_date(i)) and d > cutoff)
     if len(cols) > 3 or len(cols) != len(reported):
-        return None, "quarters not aligned to the fiscal year"
-    norm = _labeled_row(q_inc, _NORMALIZED_INCOME)
-    shares = _labeled_row(q_inc, _DILUTED_AVG_SHARES)
-    quarters = []
+        return gap("quarters not aligned to the fiscal year")
+    if not reported:
+        return [], "unavailable", None
+    lines = {k: _labeled_row(q_inc, labels) for k, labels in (
+        ("norm", _NORMALIZED_INCOME), ("shares", _DILUTED_AVG_SHARES),
+        ("gaap", _DILUTED_EPS), ("ni", _NI_COMMON), ("unusual", _UNUSUAL_ITEMS))}
+    rows = []
     for d, actual in reported:
         match = [c for cd, c in cols if abs((cd - d).days) <= FY0_QUARTER_MATCH_DAYS]
         if len(match) != 1:
-            return None, "quarters not aligned to the fiscal year"
+            return gap("quarters not aligned to the fiscal year")
+        col = match[0]
         actual = _pos_num(actual)
         if actual is None:
-            return None, "street actual EPS not reported"
-        if match[0] not in norm:
-            return None, "normalized income not reported"
-        if not shares.get(match[0]):
-            return None, "diluted shares not reported"
+            return gap("street actual EPS not reported")
+        gaap_eps = lines["gaap"].get(col)
+        if gaap_eps is None:
+            return gap("GAAP diluted EPS not reported")
+        why = _quarter_inconsistent(gaap_eps, lines["ni"].get(col), lines["norm"].get(col),
+                                    lines["shares"].get(col), lines["unusual"].get(col))
+        if why:
+            return gap(f"statement inconsistent: {why}, {d.isoformat()}")
+        rows.append((d, col, actual, _close(actual, gaap_eps, STREET_GAAP_TOLERANCE)))
+    on_gaap = {r[3] for r in rows}
+    if on_gaap == {False}:
+        return None, "adjusted", None
+    if on_gaap == {True, False}:
+        return None, "mixed", "street EPS basis mixed (GAAP and adjusted quarters)"
+    quarters = []
+    for d, col, actual, _ in rows:
+        if col not in lines["norm"]:
+            return gap("normalized income not reported")
+        if not lines["shares"].get(col):
+            return gap("diluted shares not reported")
         quarters.append({"quarter_end": d.isoformat(), "eps_actual": actual,
-                         "eps_normalized": norm[match[0]] / shares[match[0]]})
-    return quarters, None
+                         "eps_normalized": lines["norm"][col] / lines["shares"][col]})
+    return quarters, "gaap", None
 
 
 def _eps_decline_note(eps_growth, revenue_growth) -> str | None:
@@ -1308,7 +1373,7 @@ class FMPProvider(DataProvider):
             name=name, basis="TTM", sbc_assumed_zero=not sbc_found,
             sector=sector, industry=industry, ipo_date=ipo_date,
             eps_fy0=eps_fy0, eps_fy1=eps_fy1, estimate_currency=est_ccy,
-            fy1_analysts=fy1_analysts,
+            fy1_analysts=fy1_analysts, street_basis="unavailable",
             history=_fmp_annual_history(inc_a, cf_a, bal_a),
         )
 
