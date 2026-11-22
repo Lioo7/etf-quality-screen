@@ -45,7 +45,9 @@ _COMPANY_FIELDS = (
 # Bumped when a cached field changes meaning, so a same-day entry written by older
 # code is refetched instead of misread. v2 (#6): forward_eps_growth None = missing
 # (the old 0.0 sentinel would now read as negative consensus growth -> REJECTED).
-_CACHE_SCHEMA = "v2"
+# v3 (#46): pre-#46 entries hold an unconverted (untestable) forward_pe for
+# estimates in another currency than the price.
+_CACHE_SCHEMA = "v3"
 
 
 class DataUnavailable(Exception):
@@ -364,9 +366,28 @@ class YFinanceProvider(DataProvider):
       cash-flow statement cannot be retrieved at all is the name skipped.
     * PEG inputs come from the ``earnings_estimate`` consensus table (D1). A failed
       estimates request leaves PEG untestable (NEEDS_DATA path), never skips the name.
+      Estimates in another currency than the price are converted at a same-run
+      Yahoo FX rate (#46), cross-checked against Yahoo's ``forwardPE``.
     """
 
     name = "yfinance"
+
+    def __init__(self, cache: DiskCache | None = None,
+                 fetch_timeout: float = DEFAULT_FETCH_TIMEOUT):
+        super().__init__(cache, fetch_timeout)
+        self._fx_cache: dict[tuple[str, str], tuple[float, str] | None] = {}
+
+    def _fx_rate(self, base: str, quote: str) -> tuple[float, str] | None:
+        """``(rate, as_of)`` for 1 ``base`` in ``quote`` from Yahoo (``EURUSD=X``).
+
+        The newest valid daily close, fetched once per pair per run (this provider
+        instance). Any failure or an empty series -> None: PEG stays untestable,
+        never a guessed rate.
+        """
+        key = (base, quote)
+        if key not in self._fx_cache:
+            self._fx_cache[key] = _yf_fx_close(f"{base}{quote}=X")
+        return self._fx_cache[key]
 
     def _fetch_uncached(self, ticker: str) -> Company:
         try:
@@ -398,7 +419,7 @@ class YFinanceProvider(DataProvider):
             a_cf=_df(tk, "cashflow", "cash_flow"),
             info=_info(tk),
             q_bal=q_bal, a_bal=a_bal, closes=closes,
-            estimates=_yf_estimates(tk),
+            estimates=_yf_estimates(tk), fx_lookup=self._fx_rate,
         )
 
 
@@ -430,7 +451,8 @@ _COGS = ["Cost Of Revenue", "Reconciled Cost Of Revenue"]
 
 
 def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
-                q_bal=None, a_bal=None, closes=None, estimates=None) -> Company:
+                q_bal=None, a_bal=None, closes=None, estimates=None,
+                fx_lookup=None) -> Company:
     """Build a Company from Yahoo statement frames, on a single consistent basis.
 
     Factored out of the provider (no network here) so the basis-selection and
@@ -440,6 +462,9 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     unit-test path) the balance-sheet fields fall back to gate-passing defaults.
     The never-fabricate guard for real runs lives in ``_fetch_uncached``, which
     raises before calling this when Yahoo exposes no balance sheet at all.
+
+    ``fx_lookup(base, quote) -> (rate, as_of) | None`` is called only when the
+    estimate currency differs from the price currency (#46); None -> no rate.
     """
     # Cash flow entirely absent -> genuinely no data -> skip the name.
     if q_cf is None and a_cf is None:
@@ -533,12 +558,18 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
         raise DataUnavailable(f"{ticker}: no market cap from yfinance")
 
     # PEG inputs on ONE basis (D1): both EPS figures from the consensus table,
-    # P/E on the same FY1 figure. forwardPE / forwardEps / trailingEps are not
-    # read: they mix GAAP trailing EPS with an estimate on another basis.
+    # P/E on the same FY1 figure. forwardEps / trailingEps are not read: they mix
+    # GAAP trailing EPS with an estimate on another basis. forwardPE is read only as
+    # the cross-check for currency-converted estimates (#46), never as an input.
     eps_fy0, eps_fy1, est_ccy, fy1_analysts = _yf_consensus(estimates)
     price = _pos_num(info.get("currentPrice")) or _pos_num(info.get("regularMarketPrice"))
+    price_ccy = info.get("currency")
+    fx = None
+    if fx_lookup is not None and est_ccy and price_ccy and est_ccy != price_ccy:
+        fx = fx_lookup(est_ccy, price_ccy)
     forward_pe, forward_eps_growth, peg_notes = _consensus_peg_inputs(
-        price, info.get("currency"), eps_fy0, eps_fy1, est_ccy, fy1_analysts)
+        price, price_ccy, eps_fy0, eps_fy1, est_ccy, fy1_analysts,
+        fx=fx, source_forward_pe=_pos_num(info.get("forwardPE")))
     low_conf.extend(peg_notes)
 
     # Operating income (EBIT) for ROIC, on the SAME basis as revenue. Absent ->
@@ -830,6 +861,20 @@ def _yf_estimates(tk):
     return df if df is not None and getattr(df, "empty", True) is False else None
 
 
+def _yf_fx_close(symbol: str) -> tuple[float, str] | None:
+    """``(last valid close, its timestamp)`` of a Yahoo FX pair, or None on any failure."""
+    try:
+        import yfinance as yf
+
+        closes = yf.Ticker(symbol).history(period="5d")["Close"].dropna()
+        closes = closes[closes > 0]
+        if closes.empty:
+            return None
+        return float(closes.iloc[-1]), closes.index[-1].isoformat()
+    except Exception:
+        return None
+
+
 def _pos_num(v) -> float | None:
     """``float(v)`` when it is a finite number, else None (NaN/None/garbage -> None)."""
     try:
@@ -863,16 +908,25 @@ def _yf_consensus(estimates):
 
 #: Fewer FY1 analysts than this -> a low_confidence note (never a gate).
 MIN_FY1_ANALYSTS = 3
+#: Converted forward P/E vs the source's own forwardPE: a relative gap above this
+#: is a currency/ADR basis mismatch (e.g. one ADR = 5 ordinary shares), #46.
+FX_PE_TOLERANCE = 0.30
 
 
-def _consensus_peg_inputs(price, price_ccy, eps_fy0, eps_fy1, est_ccy, fy1_analysts):
+def _consensus_peg_inputs(price, price_ccy, eps_fy0, eps_fy1, est_ccy, fy1_analysts,
+                          fx=None, source_forward_pe=None):
     """``(forward_pe, forward_eps_growth, notes)`` on one basis (D1, shared by providers).
 
     ``forward_pe = price / EPS_FY1`` and ``growth = 100 x (EPS_FY1 / EPS_FY0 - 1)``.
     Untestable -> ``(None, None)`` with a note when either EPS is absent or <= 0,
-    the estimate currency differs from the price currency, or price is absent.
-    Growth <= 0 on two positive EPS values is returned as is: a failed PEG, not
-    missing data. An unknown currency computes with a note; few analysts is a note.
+    or price is absent. Growth <= 0 on two positive EPS values is returned as is: a
+    failed PEG, not missing data. An unknown currency computes with a note; few
+    analysts is a note.
+
+    Estimate currency != price currency (#46): EPS_FY1 is converted at
+    ``fx = (rate, as_of)`` (growth is currency-neutral). No rate -> untestable. The
+    converted P/E must lie within ``FX_PE_TOLERANCE`` of ``source_forward_pe``;
+    a larger gap, or no source P/E to compare, -> untestable.
     """
     if eps_fy0 is None or eps_fy1 is None:
         return None, None, ["PEG untestable: consensus EPS estimates unavailable"]
@@ -880,16 +934,31 @@ def _consensus_peg_inputs(price, price_ccy, eps_fy0, eps_fy1, est_ccy, fy1_analy
         return None, None, [f"PEG untestable: non-positive consensus EPS "
                             f"(FY0 {eps_fy0:.2f}, FY1 {eps_fy1:.2f})"]
     notes: list[str] = []
+    converted = est_ccy is not None and price_ccy is not None and est_ccy != price_ccy
     if est_ccy is None or price_ccy is None:
         notes.append("estimate currency unverified")
-    elif est_ccy != price_ccy:
-        return None, None, [f"PEG untestable: consensus EPS in {est_ccy}, "
-                            f"price in {price_ccy}"]
+    elif converted and fx is None:
+        return None, None, [f"PEG untestable: consensus EPS in {est_ccy}, price in "
+                            f"{price_ccy}, no {est_ccy}{price_ccy} FX rate"]
     if price is None or price <= 0:
         return None, None, ["PEG untestable: no price for the forward P/E"]
+    forward_pe = price / eps_fy1
+    if converted:
+        rate, as_of = fx
+        forward_pe = price / (eps_fy1 * rate)
+        if source_forward_pe is None or source_forward_pe <= 0:
+            return None, None, [f"PEG untestable: currency/ADR basis unverified "
+                                f"(consensus EPS in {est_ccy}, price in {price_ccy}, "
+                                f"no source forward P/E to cross-check)"]
+        if abs(forward_pe / source_forward_pe - 1) > FX_PE_TOLERANCE:
+            return None, None, [f"PEG untestable: currency/ADR basis mismatch "
+                                f"(converted forward P/E {forward_pe:.1f} vs source "
+                                f"{source_forward_pe:.1f})"]
+        notes.append(f"consensus EPS converted {est_ccy}->{price_ccy} at "
+                     f"{rate:.4f} ({as_of})")
     if fy1_analysts is not None and fy1_analysts < MIN_FY1_ANALYSTS:
         notes.append(f"only {fy1_analysts} FY1 analysts - PEG estimate thin")
-    return price / eps_fy1, 100 * (eps_fy1 / eps_fy0 - 1), notes
+    return forward_pe, 100 * (eps_fy1 / eps_fy0 - 1), notes
 
 
 def _info(tk) -> dict:
