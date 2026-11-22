@@ -127,6 +127,8 @@ FINANCIAL_SECTOR_NOTE = (
     "balance-sheet business — leverage/FCF/GM metrics unreliable; "
     "analyze via sector-appropriate measures"
 )
+#: Informational note (#53): consensus EPS falls while consensus revenue grows.
+EPS_DECLINE_NOTE = "EPS decline despite revenue growth: check FY0 for one-offs"
 NEEDS_DATA_HINT = (
     "PEG untestable: {reason} — supply forward_pe (= price / FY1 consensus EPS) "
     "and forward_eps_growth (= 100 x (FY1 / FY0 - 1)) in overrides.json to "
@@ -684,6 +686,10 @@ def evaluate(c: Company, consistency_years: int = 0,
             sbc_pct, rule40, p_s, growth, peg,
             c.forward_eps_growth if peg_testable else None,
         )
+        if EPS_DECLINE_NOTE in c.low_confidence:  # advisory text only, never a gate
+            prefix = "PEG failed: consensus EPS growth"
+            reasons = [f"{x} [{EPS_DECLINE_NOTE}]" if x.startswith(prefix) else x
+                       for x in reasons]
         # WATCHLIST candidacy: every quality gate passed and ONLY valuation
         # (P/S and/or a computable-but-failed PEG) blocked a track. The same
         # balance-sheet / earnings-quality / consistency gates are then run on

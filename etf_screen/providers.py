@@ -25,7 +25,7 @@ from dataclasses import asdict
 from datetime import date, timedelta
 
 from .cache import DiskCache
-from .screen import AnnualPeriod, Company
+from .screen import EPS_DECLINE_NOTE, AnnualPeriod, Company
 
 # Fields persisted to / restored from the disk cache.
 _COMPANY_FIELDS = (
@@ -420,6 +420,7 @@ class YFinanceProvider(DataProvider):
             info=_info(tk),
             q_bal=q_bal, a_bal=a_bal, closes=closes,
             estimates=_yf_estimates(tk), fx_lookup=self._fx_rate,
+            revenue_estimates=_yf_revenue_estimates(tk),
         )
 
 
@@ -452,7 +453,7 @@ _COGS = ["Cost Of Revenue", "Reconciled Cost Of Revenue"]
 
 def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
                 q_bal=None, a_bal=None, closes=None, estimates=None,
-                fx_lookup=None) -> Company:
+                fx_lookup=None, revenue_estimates=None) -> Company:
     """Build a Company from Yahoo statement frames, on a single consistent basis.
 
     Factored out of the provider (no network here) so the basis-selection and
@@ -571,6 +572,9 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
         price, price_ccy, eps_fy0, eps_fy1, est_ccy, fy1_analysts,
         fx=fx, source_forward_pe=_pos_num(info.get("forwardPE")))
     low_conf.extend(peg_notes)
+    decline = _eps_decline_note(forward_eps_growth, _yf_revenue_growth(revenue_estimates))
+    if decline:
+        low_conf.append(decline)
 
     # Operating income (EBIT) for ROIC, on the SAME basis as revenue. Absent ->
     # NaN so ROIC is treated as not-computable (advisory), never a false reject.
@@ -859,6 +863,35 @@ def _yf_estimates(tk):
     except Exception:
         return None
     return df if df is not None and getattr(df, "empty", True) is False else None
+
+
+def _yf_revenue_estimates(tk):
+    """The consensus ``revenue_estimate`` table, or None on any failure (note-only input)."""
+    try:
+        df = tk.revenue_estimate
+    except Exception:
+        return None
+    return df if df is not None and getattr(df, "empty", True) is False else None
+
+
+def _yf_revenue_growth(table) -> float | None:
+    """Consensus revenue growth % (``+1y`` avg over ``0y`` avg); None unless both > 0."""
+    if table is None:
+        return None
+    try:
+        r0, r1 = _pos_num(table.loc["0y", "avg"]), _pos_num(table.loc["+1y", "avg"])
+    except (KeyError, IndexError):
+        return None
+    if r0 is None or r1 is None or r0 <= 0 or r1 <= 0:
+        return None
+    return 100 * (r1 / r0 - 1)
+
+
+def _eps_decline_note(eps_growth, revenue_growth) -> str | None:
+    """#53: the FY0 one-off note when EPS growth <= 0 while revenue growth > 0."""
+    if eps_growth is None or revenue_growth is None:
+        return None
+    return EPS_DECLINE_NOTE if eps_growth <= 0 and revenue_growth > 0 else None
 
 
 def _yf_fx_close(symbol: str) -> tuple[float, str] | None:
