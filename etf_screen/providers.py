@@ -47,9 +47,11 @@ _COMPANY_FIELDS = (
 # (the old 0.0 sentinel would now read as negative consensus growth -> REJECTED).
 # v3 (#46): pre-#46 entries hold an unconverted (untestable) forward_pe for
 # estimates in another currency than the price.
-# v4 (#58): market_cap is normalised to the statement currency (D18) and names with
-# quarterly capex/SBC gaps screen on the annual basis, so older entries are stale.
-_CACHE_SCHEMA = "v4"
+# v4 (#53, #58): v4 was written today by two unmerged branches (the EPS-decline note
+# and statement-currency market cap / annual basis), so same-day v4 entries may come
+# from either code. v5 (#53 + #58): entries carry the note, the converted market cap
+# and the annual-basis fallback.
+_CACHE_SCHEMA = "v5"
 
 #: Added to ``low_confidence`` when a market cap was currency-converted (#58): the
 #: unlock prices use market cap / shares and are not shown until #62 reworks them.

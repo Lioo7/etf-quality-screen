@@ -21,7 +21,7 @@
   gap, or a quarterly SBC gap with SBC on the annual statement, now moves the whole
   company to the annual basis. Market cap is converted to the statement currency
   before P/S (CNY, EUR reporters); no FX rate means a skip. Converted names show no
-  unlock price until #62. Cache schema is `v4`.
+  unlock price until #62. Cache schema is `v5`.
 
 ## v0.2.1 — 2026-07-10
 

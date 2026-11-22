@@ -128,7 +128,8 @@ FINANCIAL_SECTOR_NOTE = (
     "analyze via sector-appropriate measures"
 )
 #: Informational note (#53): consensus EPS falls while consensus revenue grows.
-EPS_DECLINE_NOTE = "EPS decline despite revenue growth: check FY0 for one-offs"
+EPS_DECLINE_NOTE = (
+    "EPS decline despite revenue growth: check FY0 for one-offs or margin pressure")
 NEEDS_DATA_HINT = (
     "PEG untestable: {reason} — supply forward_pe (= price / FY1 consensus EPS) "
     "and forward_eps_growth (= 100 x (FY1 / FY0 - 1)) in overrides.json to "
