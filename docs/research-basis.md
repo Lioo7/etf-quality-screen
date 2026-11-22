@@ -29,3 +29,6 @@ entry when new research shapes a decision.
 | Low sentiment is followed by relatively high returns on unprofitable and extreme-growth stocks; high sentiment by low returns | Baker & Wurgler, J. Finance 2006 | D16, Track B context |
 | The CNN Fear & Greed index's predictive link to index returns weakened sharply after 2020 | Farrell & O'Connor, Finance Research Letters 2025 | D16 |
 | The 21-day / 200-day moving-average distance predicts short-horizon returns | Avramov, Kaplanski & Subrahmanyam (SSRN 3111334) | #36, D16 |
+| Consensus long-term growth forecasts for high-growth stocks are too optimistic and get revised down; those stocks then underperform | La Porta, J. Finance 1996; Bordalo, Gennaioli, La Porta & Shleifer, "Diagnostic Expectations and Stock Returns", J. Finance 2019 | Valuation-pass price label (#62, D20) |
+| Analysts revise earnings forecasts sluggishly, especially after bad news | Chan, Jegadeesh & Lakonishok, "Momentum Strategies", J. Finance 1996 | Valuation-pass price label (#62, D20) |
+| Sell-side price targets are met at the 12-month horizon only about 38% of the time | Bradshaw, Brown & Huang, Review of Accounting Studies 2013 | Not a price target (D10, D20) |
