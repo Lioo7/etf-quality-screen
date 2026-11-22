@@ -47,7 +47,8 @@ _COMPANY_FIELDS = (
 # (the old 0.0 sentinel would now read as negative consensus growth -> REJECTED).
 # v3 (#46): pre-#46 entries hold an unconverted (untestable) forward_pe for
 # estimates in another currency than the price.
-_CACHE_SCHEMA = "v3"
+# v4 (#53): same-day entries lack the EPS-decline note.
+_CACHE_SCHEMA = "v4"
 
 
 class DataUnavailable(Exception):
