@@ -149,7 +149,12 @@ multiple on the listed line), a verified `market_cap` too. Completing PEG
 against a fictional cap would finish the screen against a fictional valuation.
 Boundaries: a *computable* failed PEG keeps its normal fate
 (`WATCHLIST`/`REJECTED`); consensus EPS growth ≤ 0 is a failed PEG and plain
-`REJECTED` (no price fixes shrinking earnings, so never `WATCHLIST`); a name that also fails P/S or any quality gate stays
+`REJECTED` (no price fixes shrinking earnings, so never `WATCHLIST`), unless
+consensus FY0 carries one-off items of at least 10% of FY0 (street actual minus
+normalized EPS over the reported FY0 quarters, US issuers only; D19): then PEG
+is untestable whatever the growth sign, and the `NEEDS_DATA` entry lists what to
+verify, the PEG if confirmed ("not worth checking" when it would still fail)
+and the overrides.json lines to paste; a name that also fails P/S or any quality gate stays
 plain rejected — more estimate data could not have saved it; Track B is
 untouched (PEG is structurally N/A there). Five-letter OTC ADR tickers (ending
 in `Y` or `F`) also carry the informational `otc_adr_data_suspect` flag —

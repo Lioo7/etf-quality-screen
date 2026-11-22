@@ -23,6 +23,14 @@
   before P/S (CNY, EUR reporters); no FX rate means a skip. Converted names show no
   unlock price until #62. Cache schema is `v5`.
 
+- **One-off items in consensus FY0 (#61, D19).** Street actual EPS minus normalized
+  EPS over the FY0 quarters already reported is the one-off amount inside consensus
+  FY0. At 10% of FY0 or more (either sign) PEG is untestable instead of failed or
+  passed: a GOOGL-style gain no longer rejects on "growth ≤ 0", and a loss no longer
+  passes on overstated growth. `NEEDS_DATA` entries carry a verification task
+  (console and export columns `one_off_*`). US issuers with one currency only;
+  anything missing is noted "one-off check unavailable". Cache schema is `v6`.
+
 ## v0.2.1 — 2026-07-10
 
 Live-fire fixes from the first real v0.2 runs (QQQ / Israel-tech /

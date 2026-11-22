@@ -39,7 +39,7 @@ _COMPANY_FIELDS = (
     "sbc_assumed_zero", "overridden_fields", "sector", "industry", "ipo_date",
     "current_price", "ath_price", "price_3mo_ago", "price_history_years",
     "eps_fy0", "eps_fy1", "estimate_currency", "fy1_analysts",
-    "market_cap_converted", "history",
+    "market_cap_converted", "fy0_quarter_eps", "history",
 )
 
 # Bumped when a cached field changes meaning, so a same-day entry written by older
@@ -50,8 +50,9 @@ _COMPANY_FIELDS = (
 # v4 (#53, #58): v4 was written today by two unmerged branches (the EPS-decline note
 # and statement-currency market cap / annual basis), so same-day v4 entries may come
 # from either code. v5 (#53 + #58): entries carry the note, the converted market cap
-# and the annual-basis fallback.
-_CACHE_SCHEMA = "v5"
+# and the annual-basis fallback. v6 (#61): entries carry fy0_quarter_eps; a v5 entry
+# would read as "check unavailable" and miss a one-off-distorted FY0.
+_CACHE_SCHEMA = "v6"
 
 #: Added to ``low_confidence`` when a market cap was currency-converted (#58): the
 #: unlock prices use market cap / shares and are not shown until #62 reworks them.
@@ -426,6 +427,7 @@ class YFinanceProvider(DataProvider):
             q_bal=q_bal, a_bal=a_bal, closes=closes,
             estimates=_yf_estimates(tk), fx_lookup=self._fx_rate,
             revenue_estimates=_yf_revenue_estimates(tk),
+            earnings_history=_yf_earnings_history(tk),
         )
 
 
@@ -458,7 +460,7 @@ _COGS = ["Cost Of Revenue", "Reconciled Cost Of Revenue"]
 
 def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
                 q_bal=None, a_bal=None, closes=None, estimates=None,
-                fx_lookup=None, revenue_estimates=None) -> Company:
+                fx_lookup=None, revenue_estimates=None, earnings_history=None) -> Company:
     """Build a Company from Yahoo statement frames, on a single consistent basis.
 
     Factored out of the provider (no network here) so the basis-selection and
@@ -601,6 +603,12 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     decline = _eps_decline_note(forward_eps_growth, _yf_revenue_growth(revenue_estimates))
     if decline:
         low_conf.append(decline)
+    # One-off items inside consensus FY0 (#61): raw per-quarter pairs only; screen.py
+    # decides. The "unavailable" note matters only where PEG decides the verdict.
+    fy0_quarter_eps, one_off_gap = _yf_fy0_quarter_eps(
+        earnings_history, q_inc, a_inc, info, est_ccy, date.today())
+    if one_off_gap and net_income_ttm > 0 and forward_eps_growth is not None:
+        low_conf.append(f"one-off check unavailable ({one_off_gap})")
 
     # Operating income (EBIT) for ROIC, on the SAME basis as revenue. Absent ->
     # NaN so ROIC is treated as not-computable (advisory), never a false reject.
@@ -676,7 +684,7 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
         current_price=current_price, ath_price=ath_price,
         price_3mo_ago=price_3mo_ago, price_history_years=price_history_years,
         eps_fy0=eps_fy0, eps_fy1=eps_fy1, estimate_currency=est_ccy,
-        fy1_analysts=fy1_analysts,
+        fy1_analysts=fy1_analysts, fy0_quarter_eps=fy0_quarter_eps,
         history=_annual_history(a_inc, a_cf, a_bal),
     )
 
@@ -938,6 +946,86 @@ def _yf_revenue_growth(table) -> float | None:
     if r0 is None or r1 is None or r0 <= 0 or r1 <= 0:
         return None
     return 100 * (r1 / r0 - 1)
+
+
+def _yf_earnings_history(tk):
+    """Yahoo ``earnings_history`` (street actual EPS per quarter), or None on any failure."""
+    try:
+        df = tk.earnings_history
+    except Exception:
+        return None
+    return df if df is not None and getattr(df, "empty", True) is False else None
+
+
+# Morningstar quarterly-income labels (Yahoo's 2026 dataset). "Normalized Income" is net
+# income excluding unusual items, after their tax effect. No fallback label: Net Income
+# would hide exactly the one-offs this check measures. Not derived from Total Unusual
+# Items when NaN: on AMZN Q2 2026 those rows are NaN too (#61 PR).
+_NORMALIZED_INCOME = ["Normalized Income"]
+_DILUTED_AVG_SHARES = ["Diluted Average Shares"]
+#: An FY0 quarter matches a statement column within this many days (52/53-week years).
+FY0_QUARTER_MATCH_DAYS = 10
+#: The newest annual column anchors FY0 only when it is at most ~15 months old.
+FY0_ANNUAL_MAX_AGE_DAYS = 457
+
+
+def _as_date(x) -> date | None:
+    try:
+        return date.fromisoformat(str(x)[:10])
+    except ValueError:
+        return None
+
+
+def _yf_fy0_quarter_eps(earnings_history, q_inc, a_inc, info, est_ccy, today: date):
+    """``(quarters, None)`` or ``(None, cause)`` for the #61 one-off check.
+
+    FY0 quarters are those ending after the newest annual statement column, not
+    ``info.lastFiscalYearEnd`` (stale for NVDA in 2026-11). Each is a dict
+    ``{quarter_end, eps_actual, eps_normalized}``: street actual EPS (``epsActual``)
+    and normalized income / diluted average shares from the same quarter's column.
+    US issuers only with statement = estimate = price currency: an ADR's street EPS
+    is per ADS while statement EPS is per ordinary share (a 1:6 ADR would show an
+    ~83% false one-off even in USD). Any gap returns a cause, never a partial sum.
+    """
+    if (earnings_history is None or getattr(earnings_history, "empty", True)
+            or "epsActual" not in earnings_history.columns):
+        return None, "no earnings history"
+    if (info.get("country") or "") != "United States":
+        return None, "non-US issuer"
+    stmt_ccy, price_ccy = info.get("financialCurrency"), info.get("currency")
+    if not (stmt_ccy and price_ccy and est_ccy) or len({stmt_ccy, price_ccy, est_ccy}) > 1:
+        return None, "currency mismatch or unverified"
+    annual = [d for d in map(_as_date, a_inc.columns if a_inc is not None else []) if d]
+    if not annual:
+        return None, "no annual statement to anchor the fiscal year"
+    fy_end = max(annual)
+    if (today - fy_end).days > FY0_ANNUAL_MAX_AGE_DAYS:
+        return None, "latest annual statement older than 15 months"
+    cutoff = fy_end + timedelta(days=15)
+    cols = [(d, c) for c in (q_inc.columns if q_inc is not None else [])
+            if (d := _as_date(c)) and d > cutoff]
+    reported = sorted((d, v) for i, v in zip(earnings_history.index,
+                                             earnings_history["epsActual"])
+                      if (d := _as_date(i)) and d > cutoff)
+    if len(cols) > 3 or len(cols) != len(reported):
+        return None, "quarters not aligned to the fiscal year"
+    norm = _labeled_row(q_inc, _NORMALIZED_INCOME)
+    shares = _labeled_row(q_inc, _DILUTED_AVG_SHARES)
+    quarters = []
+    for d, actual in reported:
+        match = [c for cd, c in cols if abs((cd - d).days) <= FY0_QUARTER_MATCH_DAYS]
+        if len(match) != 1:
+            return None, "quarters not aligned to the fiscal year"
+        actual = _pos_num(actual)
+        if actual is None:
+            return None, "street actual EPS not reported"
+        if match[0] not in norm:
+            return None, "normalized income not reported"
+        if not shares.get(match[0]):
+            return None, "diluted shares not reported"
+        quarters.append({"quarter_end": d.isoformat(), "eps_actual": actual,
+                         "eps_normalized": norm[match[0]] / shares[match[0]]})
+    return quarters, None
 
 
 def _eps_decline_note(eps_growth, revenue_growth) -> str | None:
@@ -1202,6 +1290,8 @@ class FMPProvider(DataProvider):
         forward_pe, forward_eps_growth, peg_notes = _consensus_peg_inputs(
             price, price_ccy, eps_fy0, eps_fy1, est_ccy, fy1_analysts)
         low_conf.extend(peg_notes)
+        if net_income_ttm > 0 and forward_eps_growth is not None:  # #61 is Yahoo-only
+            low_conf.append("one-off check unavailable (not supported by FMP)")
 
         return Company(
             ticker=ticker, revenue_ttm=revenue_ttm, revenue_ttm_prior=revenue_prior,

@@ -11,3 +11,4 @@ paths: ["etf_screen/providers.py"]
 - Price data: `history(period="max", auto_adjust=True)` (split/dividend-adjusted; a raw-close ATH would be meaningless after a split). A failed price/IPO-date fetch flags `low_confidence` but never skips the name.
 - yfinance returns raw dollars, Mock uses $M: fine, every screen metric is a scale-invariant ratio.
 - Adding a `Company` field: update `_COMPANY_FIELDS` (cache round-trip) and populate it in every provider.
+- **FY0 one-off inputs (#61, D19).** `_yf_fy0_quarter_eps()` (pure) pairs `earnings_history` `epsActual` with `Normalized Income` / `Diluted Average Shares` for the quarters after the newest annual column (≤ 15 months old, ±10-day matching). US issuers with statement = estimate = price currency only; any gap returns a cause (never a partial sum, never a derived normalized income). `screen.fy0_one_off_check()` decides.
