@@ -55,11 +55,12 @@ _COMPANY_FIELDS = (
 # would read as "check unavailable" and miss a one-off-distorted FY0. v7 (#61 revision
 # 2): fy0_quarter_eps is set only on a GAAP street basis, plus street_basis; a v6 entry
 # from the first #61 commit holds quarters for adjusted reporters (false one-offs).
-_CACHE_SCHEMA = "v7"
+# v8 (#62): current_price is the quote (FMP: set at all) and the #58 "unlock price
+# not shown" note is gone; a v7 entry would still carry that stale note.
+_CACHE_SCHEMA = "v8"
 
-#: Added to ``low_confidence`` when a market cap was currency-converted (#58): the
-#: unlock prices use market cap / shares and are not shown until #62 reworks them.
-UNLOCK_CONVERTED_NOTE = "unlock price not shown: currency-converted market cap (#62)"
+#: Yahoo exposed no quote price, so current_price is the last history close (D20).
+PRICE_FROM_HISTORY_NOTE = "no quote price from source - current price is the last close"
 
 
 class DataUnavailable(Exception):
@@ -588,7 +589,7 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     market_cap, cap_converted, cap_note = _statement_currency_cap(
         ticker, float(market_cap), price_ccy, info.get("financialCurrency"), fx_lookup)
     if cap_converted:
-        low_conf.extend([cap_note, UNLOCK_CONVERTED_NOTE])
+        low_conf.append(cap_note)
 
     # PEG inputs on ONE basis (D1): both EPS figures from the consensus table,
     # P/E on the same FY1 figure. forwardEps / trailingEps are not read: they mix
@@ -663,11 +664,17 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     if ipo_date is None:
         low_conf.append("first trading date unknown - IPO seasoning not checked")
 
-    # Adjusted-close snapshot for the entry-timing annotations (informational).
-    current_price, ath_price, price_3mo_ago, price_history_years = (
+    # Price snapshot for entry timing and the valuation-pass price (informational).
+    # current_price is the quote forward_pe and market cap reflect (D1, D20); the
+    # last history close stands in only when Yahoo exposes no quote at all.
+    last_close, ath_price, price_3mo_ago, price_history_years = (
         _extract_price_history(closes, date.today()))
-    if current_price is None:
+    if last_close is None:
         low_conf.append("price history unavailable - entry timing not computed")
+    current_price = price
+    if current_price is None and last_close is not None:
+        current_price = last_close
+        low_conf.append(PRICE_FROM_HISTORY_NOTE)
 
     return Company(
         ticker=ticker, revenue_ttm=revenue_ttm, revenue_ttm_prior=revenue_prior,
@@ -1352,7 +1359,7 @@ class FMPProvider(DataProvider):
         market_cap, cap_converted, cap_note = _statement_currency_cap(
             ticker, market_cap, price_ccy, est_ccy, self._fx_rate)
         if cap_converted:
-            low_conf.extend([cap_note, UNLOCK_CONVERTED_NOTE])
+            low_conf.append(cap_note)
         forward_pe, forward_eps_growth, peg_notes = _consensus_peg_inputs(
             price, price_ccy, eps_fy0, eps_fy1, est_ccy, fy1_analysts)
         low_conf.extend(peg_notes)
@@ -1373,6 +1380,7 @@ class FMPProvider(DataProvider):
             low_confidence=low_conf,
             name=name, basis="TTM", sbc_assumed_zero=not sbc_found,
             sector=sector, industry=industry, ipo_date=ipo_date,
+            current_price=price,  # the quote price; no ATH / 3-month on FMP (D20)
             eps_fy0=eps_fy0, eps_fy1=eps_fy1, estimate_currency=est_ccy,
             fy1_analysts=fy1_analysts, street_basis="unavailable",
             history=_fmp_annual_history(inc_a, cf_a, bal_a),

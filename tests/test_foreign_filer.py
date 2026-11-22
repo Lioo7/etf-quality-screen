@@ -4,8 +4,8 @@ PDD, BABA, JD and BIDU expose quarterly operating cash flow but no quarterly cap
 (JD: one quarter) and no quarterly SBC, while the annual statements are complete.
 The whole company must then screen on the annual basis (one basis, never mixed),
 with a precise note. Their statements are in CNY while Yahoo's market cap is in
-USD, so market cap is normalised to the statement currency before P/S (D18); a
-converted market cap hides the unlock prices (#62 fixes that properly).
+USD, so market cap is normalised to the statement currency before P/S (D18). The
+unlock prices come from the traded price (#62, D20), so a converted name shows them.
 """
 
 from dataclasses import asdict, replace
@@ -16,11 +16,12 @@ import pytest
 from etf_screen.providers import (
     _CACHE_SCHEMA,
     _COMPANY_FIELDS,
-    UNLOCK_CONVERTED_NOTE,
+    PRICE_FROM_HISTORY_NOTE,
     DataUnavailable,
     _extract_yf,
 )
-from etf_screen.screen import ScreenStatus, evaluate
+from etf_screen.screen import (UNLOCK_IMPLIED_NOTE, UNLOCK_SUPPRESSED_NOTE, ScreenStatus,
+                               evaluate)
 from test_peg_basis import _FMP_EST, _Q_CF, _Q_INC, _fmp_provider, _frame
 from test_screen import ACCEPTANCE
 
@@ -137,7 +138,8 @@ def test_cny_statements_convert_the_usd_market_cap():
     assert evaluate(c).p_s == pytest.approx(14000.0 / c.revenue_ttm)
     assert any("market cap converted USD->CNY at 7.0000 (2026-11-22)" in n
                for n in c.low_confidence)
-    assert UNLOCK_CONVERTED_NOTE in c.low_confidence
+    assert not any("unlock price not shown" in n for n in c.low_confidence)
+    assert c.current_price == 480.0  # the quote the metrics used (D1)
 
 
 def test_missing_fx_rate_skips_rather_than_guesses():
@@ -160,7 +162,6 @@ def test_same_or_unknown_statement_currency_does_not_look_up_a_rate(info):
 
     c = _build(_Q_CF, info=info, fx_lookup=lookup)
     assert c.market_cap == 2000 and not c.market_cap_converted
-    assert UNLOCK_CONVERTED_NOTE not in c.low_confidence
 
 
 def test_the_cny_name_end_to_end_gets_a_verdict_on_one_basis():
@@ -171,14 +172,67 @@ def test_the_cny_name_end_to_end_gets_a_verdict_on_one_basis():
     assert r.status is ScreenStatus.REJECTED and any("P/S" in x for x in r.reasons)
 
 
-# --- unlock prices are hidden for a converted market cap (until #62) -------------
-def test_converted_market_cap_hides_the_unlock_prices_but_not_the_verdict():
-    base = ACCEPTANCE["PriceyButProfitable"]
-    shown = evaluate(base)
-    assert shown.status is ScreenStatus.WATCHLIST and shown.unlock_peg_price is not None
-    hidden = evaluate(replace(base, market_cap_converted=True))
-    assert hidden.status is ScreenStatus.WATCHLIST  # the verdict never moves
-    assert hidden.unlock_peg_price is None and hidden.unlock_ps_price is None
+# --- unlock prices from the traded price (#62, D20) -------------------------------
+def test_converted_market_cap_shows_the_unlock_price():
+    # Cap in CNY, ADS trading in USD: price x (ceiling / PEG) needs neither FX nor
+    # the ADS ratio, so the #58 suppression is lifted.
+    base = replace(ACCEPTANCE["PriceyButProfitable"], market_cap_converted=True,
+                   current_price=90.0)
+    r = evaluate(base)
+    assert r.status is ScreenStatus.WATCHLIST and r.unlock_basis == "price"
+    assert r.unlock_peg_price == pytest.approx(90.0 * 2.0 / r.peg)
+    assert not any("unlock" in n for n in r.low_confidence_notes)
+
+
+def test_converted_market_cap_without_a_traded_price_shows_no_unlock():
+    # The implied price (converted cap / ordinary shares) is in the statement
+    # currency, so it is never used: no unlock, with a note; the verdict never moves.
+    r = evaluate(replace(ACCEPTANCE["PriceyButProfitable"], market_cap_converted=True))
+    assert r.status is ScreenStatus.WATCHLIST and r.unlock_basis is None
+    assert r.unlock_peg_price is None and r.unlock_ps_price is None
+    assert UNLOCK_SUPPRESSED_NOTE in r.low_confidence_notes
+    assert UNLOCK_IMPLIED_NOTE not in r.low_confidence_notes
+
+
+def test_no_suppression_note_when_growth_rules_out_an_unlock_anyway():
+    from etf_screen.cli import _unlocks
+    from test_screen import make
+    # Flat revenue: P/S can never pass, PEG passes -> no unlock on any price basis.
+    flat = make("FLAT", 1000, 1000, 500, 30, 30, 1000, 1000, 8000, 20, 15, net_income=300)
+    r = evaluate(replace(flat, market_cap_converted=True))
+    assert r.status is ScreenStatus.WATCHLIST and r.unlock_basis is None
+    assert UNLOCK_SUPPRESSED_NOTE not in r.low_confidence_notes
+    assert "growth <= 0" in _unlocks(r)
+
+
+# --- Yahoo price source: the quote the metrics used (D1, D20) ---------------------
+def _closes(last):
+    return pd.Series([last - 10, last], index=pd.to_datetime(["2026-01-02", "2026-11-20"]))
+
+
+def test_yahoo_current_price_is_the_quote_not_the_history_close():
+    c = _extract_yf("PDD", q_inc=_frame(_Q_INC, 5), a_inc=None, q_cf=_frame(_Q_CF, 5),
+                    a_cf=None, info=_INFO, closes=_closes(470.0))
+    assert c.current_price == 480.0 and c.ath_price == 470.0
+    assert PRICE_FROM_HISTORY_NOTE not in c.low_confidence
+
+
+def test_yahoo_current_price_falls_back_to_regular_market_price():
+    info = {**{k: v for k, v in _INFO.items() if k != "currentPrice"},
+            "regularMarketPrice": 475.0}
+    c = _extract_yf("PDD", q_inc=_frame(_Q_INC, 5), a_inc=None, q_cf=_frame(_Q_CF, 5),
+                    a_cf=None, info=info, closes=_closes(470.0))
+    assert c.current_price == 475.0 and PRICE_FROM_HISTORY_NOTE not in c.low_confidence
+
+
+def test_yahoo_current_price_uses_the_history_close_only_without_a_quote():
+    info = {k: v for k, v in _INFO.items() if k != "currentPrice"}
+    c = _extract_yf("PDD", q_inc=_frame(_Q_INC, 5), a_inc=None, q_cf=_frame(_Q_CF, 5),
+                    a_cf=None, info=info, closes=_closes(470.0))
+    assert c.current_price == 470.0 and PRICE_FROM_HISTORY_NOTE in c.low_confidence
+    none = _extract_yf("PDD", q_inc=_frame(_Q_INC, 5), a_inc=None, q_cf=_frame(_Q_CF, 5),
+                       a_cf=None, info=info)
+    assert none.current_price is None and PRICE_FROM_HISTORY_NOTE not in none.low_confidence
 
 
 # --- cache round trip -----------------------------------------------------------
@@ -188,7 +242,7 @@ def test_converted_flag_survives_the_cache_and_the_schema_is_current(tmp_path, m
     from etf_screen.providers import MockProvider
 
     monkeypatch.setattr(cache_mod, "CACHE_ROOT", tmp_path)
-    assert "market_cap_converted" in _COMPANY_FIELDS and _CACHE_SCHEMA == "v7"
+    assert "market_cap_converted" in _COMPANY_FIELDS and _CACHE_SCHEMA == "v8"
     cache = DiskCache("mock")
     stored = asdict(replace(MockProvider().fetch("MSFT"), market_cap_converted=True))
     provider = MockProvider(cache=cache)
@@ -211,6 +265,8 @@ def test_fmp_converts_market_cap_when_reporting_currency_differs(monkeypatch):
     c = p.fetch("PDD")
     assert calls[0] == ("USD", "CNY")
     assert c.market_cap == pytest.approx(14000.0) and c.market_cap_converted
+    assert c.current_price == 480.0  # the quote price: the unlock needs no FX
+    assert not any("unlock price not shown" in n for n in c.low_confidence)
 
 
 def test_fmp_missing_rate_skips(monkeypatch):

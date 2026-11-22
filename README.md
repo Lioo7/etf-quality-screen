@@ -118,12 +118,16 @@ A name that clears **every quality gate** (its would-be track, the
 balance-sheet gates, earnings quality, and the consistency gate) but fails
 **only** the valuation filters (P/S guardrail and/or a computable-but-failed
 PEG) is classified `WATCHLIST` instead of being discarded — reported in its own
-section and export rows with the **unlock price**: the price at which P/S would
-equal `0.5 × growth%` (and, where PEG was the blocker, the price at which PEG
-= 2.0), computed on the same share count and revenue base as the P/S itself.
-The buy trigger is computed on a calm day so a future dip doesn't have to be
-re-judged under FOMO. Boundaries: a name failing quality **and** valuation
-stays plain rejected; zero/negative growth → unlock `N/A` (a cheap price can't
+section and export rows with the **valuation-pass price** (`unlock_*_price`):
+where P/S and PEG would pass at today's consensus estimates; recomputed each
+run; **not a price target** (D10). It is the traded price scaled by
+`ceiling / current value`: the price at which P/S would equal `0.5 × growth%`
+(and, where PEG was the blocker, the price at which PEG = 2.0), shown with the
+% move from today's price (`unlock_*_pct`). Both metrics scale linearly with
+price, so this is exact for ADRs and foreign filers too (D20). Consensus growth
+for high-growth names tends to be revised down, so treat it as a moving line,
+not a destination. Boundaries: a name failing quality **and** valuation
+stays plain rejected; zero/negative growth → `N/A` (a cheap price can't
 fix a shrinking company — it must re-qualify on quality first). `WATCHLIST`
 names are never in the shortlist.
 
@@ -396,13 +400,13 @@ instead of vanishing into the rejected pile it lands here:
 ```
 WATCHLIST (1) — wonderful business, wrong price; ...
   MSFT (Microsoft Corporation): P/S = 12.7 (> guardrail 7.8); PEG = 2.3 (> 2.0);
-  profitable, Track B barred -> unlock: P/S $256.64, PEG $365.07
+  profitable, Track B barred -> valuation-pass price: P/S $256.64 (-38%), PEG $365.07 (-12%)
 ```
 
-Read the unlock prices as pre-computed buy triggers: below ~$257 the P/S
-guardrail clears; below ~$365 PEG clears. Both must clear for a pass, so the
-*binding* trigger is the lower one. They were computed on a calm day — when the
-price gets there, the decision is already made.
+Read the valuation-pass prices as where the valuation filters would clear at
+today's consensus: below ~$257 the P/S guardrail clears; below ~$365 PEG
+clears. Both must clear for a pass, so the *binding* one is the lower. They are
+recomputed each run (estimates move) and are not price targets (D10).
 
 **The seasoning case — FRESH.** Would pass Track A on its numbers, but it
 listed ~4 months ago, so it is set aside — not rejected, not passed:

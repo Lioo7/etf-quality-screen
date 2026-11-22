@@ -53,4 +53,4 @@ Flow: `cli.run()` → `constituents.resolve()` / `--tickers` → `provider.fetch
 
 - Solo side project: lean but portfolio-grade. CI must stay green; avoid over-engineering; keep README and inline docs balanced.
 - Adding a `Company` field: update `_COMPANY_FIELDS` in `providers.py` (cache round-trip), `export.COLUMNS` if exported, populate it in every provider, keep any default gate-passing, and add patchable scalars to `overrides._OVERRIDABLE` (informational ones to `_INFORMATIONAL`).
-- Informational fields (`ipo_date`, price snapshot) default to `None` = unknown, rendered N/A, never a fabricated value.
+- Informational fields (`ipo_date`, price snapshot) default to `None` = unknown, rendered N/A, never a fabricated value. `current_price` is the quote the metrics used (Yahoo `currentPrice` → `regularMarketPrice` → last close, noted; FMP quote), so the WATCHLIST valuation-pass price is `current_price x ceiling / metric` (D20).

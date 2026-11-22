@@ -16,7 +16,7 @@ from pathlib import Path
 
 from tabulate import tabulate
 
-from .screen import Result
+from .screen import UNLOCK_LABEL, Result
 
 # Column order shared by both formats.
 COLUMNS = [
@@ -28,7 +28,7 @@ COLUMNS = [
     "eq_capex_intensity_pct",
     "gm_latest", "gm_stddev", "gm_years", "pricing_power", "gm_not_applicable",
     "pct_off_ath", "three_month_return", "hot", "price_history_years",
-    "unlock_ps_price", "unlock_peg_price",
+    "unlock_ps_price", "unlock_ps_pct", "unlock_peg_price", "unlock_peg_pct",
     "eps_fy0", "eps_fy1", "estimate_currency", "fy1_analysts",
     "one_off_eps", "one_off_pct_fy0", "one_off_peg_if_confirmed", "one_off_worth_checking",
     "one_off_task", "one_off_unavailable_cause", "street_basis",
@@ -146,8 +146,8 @@ def _result_row(r: Result) -> dict:
         "gm_not_applicable": bool(r.margin_profile and r.margin_profile.not_applicable),
         "pct_off_ath": _num(r.pct_off_ath), "three_month_return": _num(r.three_month_return),
         "hot": r.hot, "price_history_years": _num(r.company.price_history_years, 1),
-        "unlock_ps_price": _num(r.unlock_ps_price),
-        "unlock_peg_price": _num(r.unlock_peg_price),
+        "unlock_ps_price": _num(r.unlock_ps_price), "unlock_ps_pct": _num(r.unlock_ps_pct),
+        "unlock_peg_price": _num(r.unlock_peg_price), "unlock_peg_pct": _num(r.unlock_peg_pct),
         "eps_fy0": _num(r.company.eps_fy0), "eps_fy1": _num(r.company.eps_fy1),
         "estimate_currency": r.company.estimate_currency or "N/A",
         "fy1_analysts": "N/A" if r.company.fy1_analysts is None else r.company.fy1_analysts,
@@ -211,6 +211,8 @@ def _prov_lines(prov: Provenance) -> list[str]:
         f"constituents source: {prov.source}",
         f"data as-of: {prov.as_of}",
         f"run date: {prov.run_date}",
+        f"unlock columns: {UNLOCK_LABEL}; unlock_ps_pct / unlock_peg_pct = "
+        f"% move from today's price",
     ]
 
 

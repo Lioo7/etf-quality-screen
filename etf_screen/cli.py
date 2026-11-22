@@ -27,8 +27,8 @@ from .constituents import holdings_from_csv, resolve, tickers_from_file
 from .overrides import apply_override, company_from_override, load_overrides
 from .providers import DEFAULT_FETCH_TIMEOUT, PROVIDERS, DataProvider, DataUnavailable
 from .screen import (
-    ONE_OFF_STRUCTURAL, PEG_MAX, Result, ScreenStatus, annotate_sector_context, evaluate,
-    peg_untestable_reason, rank,
+    ONE_OFF_STRUCTURAL, PEG_MAX, UNLOCK_LABEL, UNLOCK_SUPPRESSED_NOTE, Result, ScreenStatus,
+    annotate_sector_context, evaluate, peg_untestable_reason, rank,
 )
 
 
@@ -300,11 +300,10 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
                   f"{_f(r.ps_guardrail, 1)}, SBC {_f(r.sbc_pct)}%"
                   f"{', PEG ' + _peg(r.peg) if r.peg else ''}){_flags(r)}")
 
-    # --- watchlist: quality passed, valuation failed — pre-computed buy triggers ---
+    # --- watchlist: quality passed, valuation failed — valuation-pass prices ---
     if watchlist:
         print(f"\nWATCHLIST ({len(watchlist)}) — wonderful business, wrong price; "
-              f"unlock = the price at which the failed valuation filter clears "
-              f"(computed on a calm day, not under FOMO):")
+              f"{UNLOCK_LABEL}; % = move from today's price:")
         for r in watchlist:
             print(f"  {r.ticker} ({_short(r.name)}): {'; '.join(r.reasons)}"
                   f" -> {_unlocks(r)}{_flags(r)}")
@@ -476,15 +475,18 @@ def _eq_ratio(r: Result) -> str:
 
 
 def _unlocks(r: Result) -> str:
-    """Render a watchlist name's buy trigger(s), e.g. 'unlock: P/S $172.10, PEG $186.40'."""
+    """Render a watchlist name's valuation-pass price(s) with the % move from today's
+    price, e.g. 'valuation-pass price: P/S $172.10 (-31%), PEG $186.40 (-25%)'."""
     parts = []
     if r.unlock_ps_price is not None:
-        parts.append(f"P/S ${r.unlock_ps_price:,.2f}")
+        parts.append(f"P/S ${r.unlock_ps_price:,.2f} ({r.unlock_ps_pct:+.0f}%)")
     if r.unlock_peg_price is not None:
-        parts.append(f"PEG ${r.unlock_peg_price:,.2f}")
+        parts.append(f"PEG ${r.unlock_peg_price:,.2f} ({r.unlock_peg_pct:+.0f}%)")
     if not parts:
-        return "unlock N/A (growth <= 0 — must re-qualify on quality, not price)"
-    return "unlock: " + ", ".join(parts)
+        if UNLOCK_SUPPRESSED_NOTE in r.low_confidence_notes:
+            return "valuation-pass price N/A (converted market cap, no traded price)"
+        return "valuation-pass price N/A (growth <= 0 — must re-qualify on quality, not price)"
+    return "valuation-pass price: " + ", ".join(parts)
 
 
 def _gm(r: Result) -> str:

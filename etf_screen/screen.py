@@ -28,7 +28,8 @@ Verdict pipeline (``evaluate``), in order:
    the historical gate; otherwise INSUFFICIENT_HISTORY, then a consistency FAIL, else PASS.
 3. A snapshot failer blocked only by valuation (P/S and/or a computable-but-failed PEG)
    has the same gates run on its would-be track: all clear -> ``WATCHLIST`` with
-   ``_unlock_prices()`` buy triggers (requires a consistency PASS). A profitable failer
+   ``_unlock_prices()`` valuation-pass prices (traded price x ceiling / metric, D20;
+   requires a consistency PASS). A profitable failer
    whose only blocker is an untestable PEG (estimates absent, non-positive or in another
    currency, or consensus FY0 distorted by one-off items >= 10% of FY0, see
    ``fy0_one_off_check``; P/S passing) -> ``NEEDS_DATA`` with an overrides.json hint
@@ -146,6 +147,15 @@ FINANCIAL_SECTOR_NOTE = (
 #: Informational note (#53): consensus EPS falls while consensus revenue grows.
 EPS_DECLINE_NOTE = (
     "EPS decline despite revenue growth: check FY0 for one-offs or margin pressure")
+#: Label for the WATCHLIST unlock prices in the console, export header and README.
+UNLOCK_LABEL = (
+    "valuation-pass price = where P/S and PEG would pass at today's consensus "
+    "estimates; recomputed each run; not a price target (D10)")
+#: Display notes for the WATCHLIST valuation-pass price (#62, D20).
+UNLOCK_IMPLIED_NOTE = (
+    "valuation-pass price from market cap / shares: no traded price; wrong for ADRs")
+UNLOCK_SUPPRESSED_NOTE = (
+    "no valuation-pass price: currency-converted market cap and no traded price")
 NEEDS_DATA_HINT = (
     "PEG untestable: {reason} — supply forward_pe (= price / FY1 consensus EPS) "
     "and forward_eps_growth (= 100 x (FY1 / FY0 - 1)) in overrides.json to "
@@ -303,11 +313,11 @@ class Company:
     # First trading date, ISO "YYYY-MM-DD". None = unknown (never guessed): the
     # name is screened normally and flagged ipo_date_unknown, NOT classified.
     ipo_date: str | None = None
-    # Split/dividend-adjusted price snapshot for the ENTRY-TIMING annotations
-    # (informational only — never read by any gate). None = price history was
+    # Price snapshot for the ENTRY-TIMING annotations and the WATCHLIST
+    # valuation-pass price (informational only — never read by any gate). None =
     # unavailable (or, for price_3mo_ago, the listing is younger than 3 months);
     # the annotations render N/A rather than fabricating a level.
-    current_price: float | None = None   # last adjusted close
+    current_price: float | None = None   # the quote the metrics used (D1, D20)
     ath_price: float | None = None       # all-time-high adjusted close
     price_3mo_ago: float | None = None   # adjusted close ~3 months back
     price_history_years: float | None = None  # span the ATH window actually covers
@@ -321,8 +331,7 @@ class Company:
     estimate_currency: str | None = None
     fy1_analysts: int | None = None
     # True when market_cap was converted into the statement currency (D18, #58). The
-    # unlock prices (market cap / shares) are then not shown, until #62 derives them
-    # from the traded price instead.
+    # valuation-pass price then never falls back to market cap / shares (D20).
     market_cap_converted: bool = False
     # The FY0 quarters already reported (#61), oldest first, each a dict
     # ``{quarter_end, eps_actual, eps_normalized}``: street actual EPS and
@@ -419,11 +428,13 @@ class Result:
     three_month_return: float | None    # trailing 3-month total return, % (None: young/no data)
     hot: bool                           # 3-mo return > +50% AND within 20% of ATH
 
-    # watchlist unlock prices (set ONLY on a WATCHLIST result; else None) — the
-    # pre-computed buy triggers: the price at which the failed valuation filter
-    # would clear, on the same share count / revenue base as the P/S itself
+    # watchlist valuation-pass ("unlock") prices (set ONLY on a WATCHLIST result;
+    # else None): where the failed valuation filter would clear at today's
+    # consensus, on the traded-price scale (D20). Not a price target (D10).
     unlock_ps_price: float | None       # price where P/S == 0.5 x growth% (None: growth <= 0)
     unlock_peg_price: float | None      # price where PEG == 2.0 (None: PEG wasn't the blocker)
+    # "price" (traded price), "implied" (market cap / shares fallback) or None.
+    unlock_basis: str | None
 
     # verdict
     status: ScreenStatus
@@ -558,7 +569,31 @@ class Result:
         cause = self.one_off_unavailable_cause
         if cause in ONE_OFF_STRUCTURAL:
             drop.add(ONE_OFF_UNAVAILABLE.format(cause))
-        return [n for n in self.company.low_confidence if n not in drop]
+        notes = [n for n in self.company.low_confidence if n not in drop]
+        if self.unlock_basis == "implied":
+            notes.append(UNLOCK_IMPLIED_NOTE)
+        elif (self.watchlist and self.company.market_cap_converted
+              and self.company.current_price is None
+              and any(x is not None for x in _unlock_ratios(
+                  self.growth, self.p_s, self.peg, self.company.net_income_ttm > 0,
+                  self.pass_ps, self.pass_peg))):
+            # Only when a price would have existed: growth <= 0 keeps its own N/A.
+            notes.append(UNLOCK_SUPPRESSED_NOTE)
+        return notes
+
+    @property
+    def unlock_ps_pct(self) -> float | None:
+        """% move from today's price to the P/S valuation-pass price (None: no unlock)."""
+        if self.unlock_ps_price is None:
+            return None
+        return 100 * (PS_GUARDRAIL_FACTOR * self.growth / self.p_s - 1)
+
+    @property
+    def unlock_peg_pct(self) -> float | None:
+        """% move from today's price to the PEG valuation-pass price (None: no unlock)."""
+        if self.unlock_peg_price is None:
+            return None
+        return 100 * (PEG_MAX / self.peg - 1)
 
     @property
     def ps_headroom(self) -> float:
@@ -719,6 +754,7 @@ def evaluate(c: Company, consistency_years: int = 0,
     margin_prof: MarginProfile | None = None
     unlock_ps_price: float | None = None
     unlock_peg_price: float | None = None
+    unlock_basis: str | None = None
 
     def _run_quality_gates(track_a_like: bool):
         """``(bs_reasons, consistency)`` for a real or hypothetical track.
@@ -810,7 +846,7 @@ def evaluate(c: Company, consistency_years: int = 0,
                     reasons = [needs_data_hint(c)]
                 else:
                     status = ScreenStatus.WATCHLIST
-                    unlock_ps_price, unlock_peg_price = _unlock_prices(
+                    unlock_ps_price, unlock_peg_price, unlock_basis = _unlock_prices(
                         c, growth, p_s, peg, quality_a, pass_ps, pass_peg,
                     )
     else:
@@ -857,7 +893,7 @@ def evaluate(c: Company, consistency_years: int = 0,
         ]
         # Unlock prices are WATCHLIST buy triggers — an unseasoned listing has
         # no actionable trigger, so a would-be-WATCHLIST name sheds them here.
-        unlock_ps_price = unlock_peg_price = None
+        unlock_ps_price = unlock_peg_price = unlock_basis = None
 
     return Result(
         company=c,
@@ -875,7 +911,7 @@ def evaluate(c: Company, consistency_years: int = 0,
         eq_capex_intensity=eq_capex_intensity,
         pct_off_ath=pct_off_ath, three_month_return=three_month_return, hot=hot,
         unlock_ps_price=unlock_ps_price, unlock_peg_price=unlock_peg_price,
-        status=status, track_a=track_a, track_b=track_b,
+        unlock_basis=unlock_basis, status=status, track_a=track_a, track_b=track_b,
         track=track, reasons=reasons, consistency=consistency,
         roic_history=roic_hist, margin_profile=margin_prof, one_off=one_off,
     )
@@ -884,32 +920,51 @@ def evaluate(c: Company, consistency_years: int = 0,
 def _unlock_prices(
     c: Company, growth: float, p_s: float, peg: float | None,
     track_a_like: bool, pass_ps: bool, pass_peg: bool,
-) -> tuple[float | None, float | None]:
-    """``(unlock_ps_price, unlock_peg_price)`` — the WATCHLIST buy triggers.
+) -> tuple[float | None, float | None, str | None]:
+    """``(unlock_ps_price, unlock_peg_price, basis)``: the WATCHLIST valuation-pass prices.
 
-    Both filters scale linearly with price on the SAME share count / revenue
-    base as the P/S computation itself (implied price = market_cap / diluted
-    shares), so each unlock is the current implied price scaled by the ratio of
-    the filter's ceiling to its current value:
+    P/S and PEG both scale linearly with price, so each unlock is the traded price
+    scaled by the ratio of the filter's ceiling to its current value (D20). That is
+    exact on the traded scale with no share-count or FX assumption, so it is right
+    for an ADR (BABA: 8 ordinary shares per ADS) and a converted market cap alike:
 
-    * P/S:  price where ``P/S == 0.5 x growth%`` — N/A when growth <= 0 (the
+    * P/S:  price where ``P/S == 0.5 x growth%``. N/A when growth <= 0 (the
       guardrail is then non-positive: no price fixes a shrinking company, it
       must re-qualify on quality first).
-    * PEG:  price where ``PEG == 2.0`` — only when PEG was actually the blocker
+    * PEG:  price where ``PEG == 2.0``, only when PEG was actually the blocker
       (a Track-B-like name has no PEG concept).
 
-    A filter that already passes needs no unlock and stays None.
+    ``basis`` is "price" (``c.current_price``), or "implied" when there is no traded
+    price and the old ``market_cap / diluted shares`` stands in (flagged; wrong for
+    ADRs). A converted market cap with no traded price gets no unlock: its implied
+    price is in the statement currency. A filter that already passes needs no
+    unlock and stays None; basis is None when no unlock is produced.
     """
-    if not c.diluted_shares_now or p_s <= 0 or c.market_cap_converted:
-        return None, None
-    implied_price = c.market_cap / c.diluted_shares_now
-    unlock_ps = None
-    if not pass_ps and growth > 0:
-        unlock_ps = implied_price * (PS_GUARDRAIL_FACTOR * growth / p_s)
-    unlock_peg = None
+    ps_ratio, peg_ratio = _unlock_ratios(growth, p_s, peg, track_a_like, pass_ps, pass_peg)
+    if ps_ratio is None and peg_ratio is None:
+        return None, None, None
+    if c.current_price is not None:
+        base, basis = c.current_price, "price"
+    elif c.diluted_shares_now and not c.market_cap_converted:
+        base, basis = c.market_cap / c.diluted_shares_now, "implied"
+    else:
+        return None, None, None
+    return (None if ps_ratio is None else base * ps_ratio,
+            None if peg_ratio is None else base * peg_ratio, basis)
+
+
+def _unlock_ratios(
+    growth: float, p_s: float, peg: float | None,
+    track_a_like: bool, pass_ps: bool, pass_peg: bool,
+) -> tuple[float | None, float | None]:
+    """``(ceiling / P/S, ceiling / PEG)`` for each failed, fixable filter, else None."""
+    ps_ratio = None
+    if not pass_ps and growth > 0 and p_s > 0:
+        ps_ratio = PS_GUARDRAIL_FACTOR * growth / p_s
+    peg_ratio = None
     if track_a_like and not pass_peg and peg is not None and peg > 0:
-        unlock_peg = implied_price * (PEG_MAX / peg)
-    return unlock_ps, unlock_peg
+        peg_ratio = PEG_MAX / peg
+    return ps_ratio, peg_ratio
 
 
 @dataclass
@@ -1087,7 +1142,7 @@ def _pre_revenue_result(c: Company) -> Result:
         earnings_quality_ratio=None, earnings_quality_years=0,
         eq_capex_intensity=None,
         pct_off_ath=None, three_month_return=None, hot=False,
-        unlock_ps_price=None, unlock_peg_price=None,
+        unlock_ps_price=None, unlock_peg_price=None, unlock_basis=None,
         status=ScreenStatus.PRE_REVENUE, track_a=False, track_b=False,
         track="—", reasons=["pre-revenue (revenue_ttm <= 0)"], consistency=None,
     )

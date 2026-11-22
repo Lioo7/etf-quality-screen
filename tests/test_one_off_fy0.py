@@ -407,7 +407,7 @@ def test_unavailable_note_only_for_profitable_names_with_testable_peg():
 
 
 def test_extract_populates_the_fields_and_caches_them():
-    assert "fy0_quarter_eps" in _COMPANY_FIELDS and _CACHE_SCHEMA == "v7"
+    assert "fy0_quarter_eps" in _COMPANY_FIELDS and _CACHE_SCHEMA == "v8"
     assert "street_basis" in _COMPANY_FIELDS
     c = _yf(_estimates(20.0, 24.0))
     assert c.fy0_quarter_eps is None and c.street_basis == "unavailable"
