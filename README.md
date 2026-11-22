@@ -473,7 +473,10 @@ over:**
   without even an aligned quarter pair falls back to the honest **annual**
   basis — revenue *and* OCF/capex/SBC all from the latest fiscal year — so
   growth, FCF margin, SBC%, and Rule of 40 share one base. The basis used is
-  shown on each name and flagged `low-confidence` when annual.
+  shown on each name and flagged `low-confidence` when annual. Missing
+  quarterly capex (or SBC the annual statement reports), typical of foreign
+  filers, also forces the annual basis. Market cap is converted to the
+  statement currency before P/S when the two differ (D18).
 - **SBC may be absent.** If the cash-flow statement is retrieved but has no SBC
   line, SBC is treated as 0, the name is flagged `sbc_assumed_zero`, and it is
   listed in a dedicated "SBC assumed 0" review section (utilities/staples like CEG

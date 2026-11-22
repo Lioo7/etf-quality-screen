@@ -15,6 +15,14 @@
 - `forward_eps_growth` is `None` when unknown (was a `0.0` sentinel); the cache
   key is versioned so same-day entries from older code are refetched.
 
+- **Foreign filers screen on an honest basis (#58, D18).** PDD, BABA, JD, BIDU
+  (and ABNB, APP) were skipped as "operating cash flow / capex missing": Yahoo has
+  no quarterly capex for them, but complete annual statements. A quarterly capex
+  gap, or a quarterly SBC gap with SBC on the annual statement, now moves the whole
+  company to the annual basis. Market cap is converted to the statement currency
+  before P/S (CNY, EUR reporters); no FX rate means a skip. Converted names show no
+  unlock price until #62. Cache schema is `v5`.
+
 ## v0.2.1 — 2026-07-10
 
 Live-fire fixes from the first real v0.2 runs (QQQ / Israel-tech /

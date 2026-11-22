@@ -353,10 +353,15 @@ def test_fmp_computes_the_consensus_peg(monkeypatch):
 
 
 def test_fmp_currency_mismatch_is_untestable(monkeypatch):
+    from etf_screen.providers import FMPProvider
+
+    # Deterministic FX for the market-cap conversion (D18); never a live Yahoo call.
+    monkeypatch.setattr(FMPProvider, "_fx_rate", lambda self, b, q: (1.08, "2026-11-22"))
     c = _fmp_provider(monkeypatch, _FMP_EST, profile_ccy="USD",
                       reported_ccy="EUR").fetch("FMP")
     assert c.forward_pe is None and c.forward_eps_growth is None
-    assert any("EUR" in m and "USD" in m for m in c.low_confidence)
+    assert any(m.startswith("PEG untestable") and "EUR" in m and "USD" in m
+               for m in c.low_confidence)
 
 
 def test_fmp_unknown_reported_currency_computes_with_note(monkeypatch):
