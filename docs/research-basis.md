@@ -19,6 +19,7 @@ entry when new research shapes a decision.
 | Investors sell winners too early and hold losers too long (the disposition effect). | Odean, "Are Investors Reluctant to Realize Their Losses?", J. Finance 1998 | Written sell-review rules and a decision journal (#32) |
 | Sell only if the thesis was wrong, the company deteriorated, or a clearly better opportunity exists; not on market fears. | Fisher, *Common Stocks and Uncommon Profits*, 1958 | #32 sell-review categories, D12 |
 | Lynch's six stock categories include cyclicals, where a low P/E can mark a peak. | Lynch, *One Up on Wall Street* | CYCLICAL flag (#15), Lynch lens (#27) |
+| A P/E at half the growth rate (PEG 0.5) is very positive; at twice the growth rate (PEG 2) very negative. Lynch's growth is a multi-year rate. | Lynch, *One Up on Wall Street* | PEG ceiling 2 kept (#20, D21) |
 | Own audit, Nov 2026: median PEG 0.52 across SPY (mixed GAAP/adjusted basis); Energy names at "0 of 4 yrs" (SBC row absent); a memory maker passing trend consistency on one boom year; a lender passing on cash-flow metrics. | Repo exports, results/*_2026-11-19.md | #5/#6, #4, #15, #9 |
 | Opportunistic insider trades predict returns; routine ones don't | Cohen, Malloy & Pomorski, J. Finance 67(3), 2012 | #51 |
 | CEO ownership > 10% is followed by 4–10% annual abnormal returns, strongest with weak governance | von Lilienfeld-Toal & Ruenzi, J. Finance 69(3), 2014 | #52 |
@@ -29,6 +30,6 @@ entry when new research shapes a decision.
 | Low sentiment is followed by relatively high returns on unprofitable and extreme-growth stocks; high sentiment by low returns | Baker & Wurgler, J. Finance 2006 | D16, Track B context |
 | The CNN Fear & Greed index's predictive link to index returns weakened sharply after 2020 | Farrell & O'Connor, Finance Research Letters 2025 | D16 |
 | The 21-day / 200-day moving-average distance predicts short-horizon returns | Avramov, Kaplanski & Subrahmanyam (SSRN 3111334) | #36, D16 |
-| Consensus long-term growth forecasts for high-growth stocks are too optimistic and get revised down; those stocks then underperform | La Porta, J. Finance 1996; Bordalo, Gennaioli, La Porta & Shleifer, "Diagnostic Expectations and Stock Returns", J. Finance 2019 | Valuation-pass price label (#62, D20) |
-| Analysts revise earnings forecasts sluggishly, especially after bad news | Chan, Jegadeesh & Lakonishok, "Momentum Strategies", J. Finance 1996 | Valuation-pass price label (#62, D20) |
+| Consensus long-term growth forecasts for high-growth stocks are too optimistic and get revised down; those stocks then underperform | La Porta, J. Finance 1996; Bordalo, Gennaioli, La Porta & Shleifer, "Diagnostic Expectations and Stock Returns", J. Finance 2019 | Valuation-pass price label (#62, D20); extrapolated to one-year FY1 consensus as a suspected PEG bias (#20, D21) |
+| Analysts revise earnings forecasts sluggishly, especially after bad news | Chan, Jegadeesh & Lakonishok, "Momentum Strategies", J. Finance 1996 | Valuation-pass price label (#62, D20); extrapolated to revenue consensus, not adopted for P/S (#20, D21) |
 | Sell-side price targets are met at the 12-month horizon only about 38% of the time | Bradshaw, Brown & Huang, Review of Accounting Studies 2013 | Not a price target (D10, D20) |
