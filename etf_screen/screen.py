@@ -300,6 +300,10 @@ class Company:
     eps_fy1: float | None = None
     estimate_currency: str | None = None
     fy1_analysts: int | None = None
+    # True when market_cap was converted into the statement currency (D18, #58). The
+    # unlock prices (market cap / shares) are then not shown, until #62 derives them
+    # from the traded price instead.
+    market_cap_converted: bool = False
     # Annual statement history (OLDEST -> NEWEST) for the multi-year consistency
     # gate. Empty when the data layer could not source a contiguous run.
     history: list[AnnualPeriod] = field(default_factory=list)
@@ -826,7 +830,7 @@ def _unlock_prices(
 
     A filter that already passes needs no unlock and stays None.
     """
-    if not c.diluted_shares_now or p_s <= 0:
+    if not c.diluted_shares_now or p_s <= 0 or c.market_cap_converted:
         return None, None
     implied_price = c.market_cap / c.diluted_shares_now
     unlock_ps = None

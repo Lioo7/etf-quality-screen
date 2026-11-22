@@ -39,7 +39,7 @@ _COMPANY_FIELDS = (
     "sbc_assumed_zero", "overridden_fields", "sector", "industry", "ipo_date",
     "current_price", "ath_price", "price_3mo_ago", "price_history_years",
     "eps_fy0", "eps_fy1", "estimate_currency", "fy1_analysts",
-    "history",
+    "market_cap_converted", "history",
 )
 
 # Bumped when a cached field changes meaning, so a same-day entry written by older
@@ -47,7 +47,13 @@ _COMPANY_FIELDS = (
 # (the old 0.0 sentinel would now read as negative consensus growth -> REJECTED).
 # v3 (#46): pre-#46 entries hold an unconverted (untestable) forward_pe for
 # estimates in another currency than the price.
-_CACHE_SCHEMA = "v3"
+# v4 (#58): market_cap is normalised to the statement currency (D18) and names with
+# quarterly capex/SBC gaps screen on the annual basis, so older entries are stale.
+_CACHE_SCHEMA = "v4"
+
+#: Added to ``low_confidence`` when a market cap was currency-converted (#58): the
+#: unlock prices use market cap / shares and are not shown until #62 reworks them.
+UNLOCK_CONVERTED_NOTE = "unlock price not shown: currency-converted market cap (#62)"
 
 
 class DataUnavailable(Exception):
@@ -66,6 +72,20 @@ class DataProvider(ABC):
                  fetch_timeout: float = DEFAULT_FETCH_TIMEOUT):
         self._cache = cache
         self.fetch_timeout = fetch_timeout  # <= 0 disables the deadline
+        self._fx_cache: dict[tuple[str, str], tuple[float, str] | None] = {}
+
+    def _fx_rate(self, base: str, quote: str) -> tuple[float, str] | None:
+        """``(rate, as_of)`` for 1 ``base`` in ``quote`` from Yahoo (``EURUSD=X``).
+
+        The newest valid daily close, fetched once per pair per run (this provider
+        instance). Any failure or an empty series -> None: the caller skips or marks
+        the metric untestable, never a guessed rate. Shared by both live providers
+        (FMP has no FX endpoint on the tiers this project targets).
+        """
+        key = (base, quote)
+        if key not in self._fx_cache:
+            self._fx_cache[key] = _yf_fx_close(f"{base}{quote}=X")
+        return self._fx_cache[key]
 
     @abstractmethod
     def _fetch_uncached(self, ticker: str) -> Company:
@@ -372,23 +392,6 @@ class YFinanceProvider(DataProvider):
 
     name = "yfinance"
 
-    def __init__(self, cache: DiskCache | None = None,
-                 fetch_timeout: float = DEFAULT_FETCH_TIMEOUT):
-        super().__init__(cache, fetch_timeout)
-        self._fx_cache: dict[tuple[str, str], tuple[float, str] | None] = {}
-
-    def _fx_rate(self, base: str, quote: str) -> tuple[float, str] | None:
-        """``(rate, as_of)`` for 1 ``base`` in ``quote`` from Yahoo (``EURUSD=X``).
-
-        The newest valid daily close, fetched once per pair per run (this provider
-        instance). Any failure or an empty series -> None: PEG stays untestable,
-        never a guessed rate.
-        """
-        key = (base, quote)
-        if key not in self._fx_cache:
-            self._fx_cache[key] = _yf_fx_close(f"{base}{quote}=X")
-        return self._fx_cache[key]
-
     def _fetch_uncached(self, ticker: str) -> Company:
         try:
             import yfinance as yf
@@ -488,6 +491,21 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     ttm_ok = (len(rev_q) >= 4 and len(shares_q) >= 5 and len(ocf_q) >= 4
               and (full_prior or yoy_growth_ok))
 
+    # Foreign private issuers (20-F / 6-K) often expose quarterly OCF but no quarterly
+    # capex or SBC, with complete annual statements (#58). A TTM basis would then
+    # skip the name on capex, or assume SBC = 0 while the annual statement shows it.
+    # Either gap moves the WHOLE company to the annual basis, never a mix.
+    annual_reason = None
+    if ttm_ok and len(_row(q_cf, _CAPEX)) < 4:
+        annual_reason = "quarterly capex not reported by source"  # annual, or a precise skip
+    elif (ttm_ok and len(_row(q_cf, _SBC)) < 4 and _labeled_row(a_cf, _SBC)
+          and _annual_usable(a_inc, a_cf)):
+        # Only when the annual statements can carry the name: otherwise keep TTM with
+        # the flagged assumed-zero SBC rather than turn a screenable name into a skip.
+        annual_reason = "quarterly SBC not reported by source"
+    if annual_reason:
+        ttm_ok = False
+
     if ttm_ok:
         basis = "TTM"
         revenue_ttm = sum(rev_q[:4])
@@ -512,7 +530,9 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
         rev_a = _row(a_inc, _REV)
         shares_a = _row(a_inc, _SHARES)
         if len(rev_a) < 2:
-            raise DataUnavailable(f"{ticker}: insufficient revenue history from yfinance")
+            raise DataUnavailable(
+                f"{ticker}: annual revenue history too short ({len(rev_a)} year(s)) "
+                f"from yfinance")
         if len(shares_a) < 2:
             raise DataUnavailable(f"{ticker}: no diluted share history from yfinance")
         if a_cf is None:
@@ -520,7 +540,7 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
         revenue_ttm, revenue_prior = rev_a[0], rev_a[1]
         shares_now, shares_prior = shares_a[0], shares_a[1]
         cf = a_cf
-        low_conf.append("metrics on ANNUAL basis (Yahoo exposed <8 quarters)")
+        low_conf.append(f"metrics on ANNUAL basis ({annual_reason or 'Yahoo exposed <8 quarters'})")
 
         def amount(labels):
             vals = _row(cf, labels)
@@ -529,9 +549,9 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     ocf, ocf_found = amount(_OCF)
     capex_raw, capex_found = amount(_CAPEX)
     if not ocf_found or not capex_found:
-        raise DataUnavailable(
-            f"{ticker}: operating cash flow / capex unavailable from yfinance"
-        )
+        missing = " and ".join(n for n, found in (("operating cash flow", ocf_found),
+                                                  ("capex", capex_found)) if not found)
+        raise DataUnavailable(f"{ticker}: {basis} {missing} unavailable from yfinance")
     capex = abs(capex_raw)
 
     sbc_raw, sbc_found = amount(_SBC)
@@ -557,6 +577,11 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     market_cap = info.get("marketCap")
     if not market_cap:
         raise DataUnavailable(f"{ticker}: no market cap from yfinance")
+    price_ccy = info.get("currency")
+    market_cap, cap_converted, cap_note = _statement_currency_cap(
+        ticker, float(market_cap), price_ccy, info.get("financialCurrency"), fx_lookup)
+    if cap_converted:
+        low_conf.extend([cap_note, UNLOCK_CONVERTED_NOTE])
 
     # PEG inputs on ONE basis (D1): both EPS figures from the consensus table,
     # P/E on the same FY1 figure. forwardEps / trailingEps are not read: they mix
@@ -564,7 +589,6 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     # the cross-check for currency-converted estimates (#46), never as an input.
     eps_fy0, eps_fy1, est_ccy, fy1_analysts = _yf_consensus(estimates)
     price = _pos_num(info.get("currentPrice")) or _pos_num(info.get("regularMarketPrice"))
-    price_ccy = info.get("currency")
     fx = None
     if fx_lookup is not None and est_ccy and price_ccy and est_ccy != price_ccy:
         fx = fx_lookup(est_ccy, price_ccy)
@@ -637,7 +661,7 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
         revenue_latest_q=rev_latest_q, revenue_year_ago_q=rev_year_ago_q,
         ocf_ttm=ocf, capex_ttm=capex, sbc_ttm=sbc,
         diluted_shares_now=shares_now, diluted_shares_prior=shares_prior,
-        market_cap=float(market_cap),
+        market_cap=market_cap, market_cap_converted=cap_converted,
         forward_pe=forward_pe,
         forward_eps_growth=forward_eps_growth, net_income_ttm=net_income_ttm,
         total_debt=float(total_debt), cash_and_equivalents=float(cash),
@@ -653,6 +677,33 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
         fy1_analysts=fy1_analysts,
         history=_annual_history(a_inc, a_cf, a_bal),
     )
+
+
+def _annual_usable(a_inc, a_cf) -> bool:
+    """True when the annual statements can carry a company on their own (#58)."""
+    return (len(_row(a_inc, _REV)) >= 2 and len(_row(a_inc, _SHARES)) >= 2
+            and bool(_row(a_inc, _NET_INCOME)) and bool(_row(a_cf, _OCF))
+            and bool(_row(a_cf, _CAPEX)))
+
+
+def _statement_currency_cap(ticker, market_cap, price_ccy, stmt_ccy, fx_lookup):
+    """``(market_cap, converted, note)`` with the cap in the STATEMENT currency (D18).
+
+    P/S divides market cap (trading currency) by revenue (statement currency); for a
+    CNY or EUR reporter listed in USD that mixes currencies. When both currencies are
+    known and differ, the cap is converted at a same-run FX rate and flagged. A
+    missing rate raises (never a guessed rate); an unknown currency changes nothing.
+    """
+    if not price_ccy or not stmt_ccy or price_ccy == stmt_ccy:
+        return market_cap, False, None
+    fx = fx_lookup(price_ccy, stmt_ccy) if fx_lookup is not None else None
+    if fx is None:
+        raise DataUnavailable(
+            f"{ticker}: statements in {stmt_ccy}, market cap in {price_ccy}, "
+            f"no {price_ccy}{stmt_ccy} FX rate")
+    rate, as_of = fx
+    return (market_cap * rate, True,
+            f"market cap converted {price_ccy}->{stmt_ccy} at {rate:.4f} ({str(as_of)[:10]})")
 
 
 def _extract_price_history(closes, today: date):
@@ -1070,7 +1121,7 @@ class FMPProvider(DataProvider):
             operating_income = sum(q["operatingIncome"] for q in inc[:4])
 
         quote = self._get(f"quote/{ticker}")[0]
-        market_cap = quote["marketCap"]
+        market_cap = float(quote["marketCap"])
         price = _pos_num(quote.get("price"))
         name = quote.get("name") or ticker
 
@@ -1141,6 +1192,11 @@ class FMPProvider(DataProvider):
                             "reported, so FY0/FY1 are one year ahead")
         est_ccy = next((r.get("reportedCurrency") for r in inc + inc_a
                         if r.get("reportedCurrency")), None)
+        # Statement-currency market cap (D18): same normalisation as the Yahoo path.
+        market_cap, cap_converted, cap_note = _statement_currency_cap(
+            ticker, market_cap, price_ccy, est_ccy, self._fx_rate)
+        if cap_converted:
+            low_conf.extend([cap_note, UNLOCK_CONVERTED_NOTE])
         forward_pe, forward_eps_growth, peg_notes = _consensus_peg_inputs(
             price, price_ccy, eps_fy0, eps_fy1, est_ccy, fy1_analysts)
         low_conf.extend(peg_notes)
@@ -1149,7 +1205,8 @@ class FMPProvider(DataProvider):
             ticker=ticker, revenue_ttm=revenue_ttm, revenue_ttm_prior=revenue_prior,
             ocf_ttm=ocf, capex_ttm=capex, sbc_ttm=sbc,
             diluted_shares_now=shares_now, diluted_shares_prior=shares_prior,
-            market_cap=market_cap, forward_pe=forward_pe,
+            market_cap=market_cap, market_cap_converted=cap_converted,
+            forward_pe=forward_pe,
             forward_eps_growth=forward_eps_growth, net_income_ttm=net_income_ttm,
             total_debt=float(total_debt), cash_and_equivalents=float(cash),
             goodwill=float(goodwill), total_assets=float(total_assets),

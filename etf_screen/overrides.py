@@ -43,7 +43,8 @@ _BALANCE_SHEET = {
 # inputs (D1) — no gate reads them; forward_pe / forward_eps_growth stay the gate
 # inputs, so patching these alone does not complete a NEEDS_DATA screen.
 _INFORMATIONAL = {"ipo_date", "current_price", "ath_price", "price_3mo_ago",
-                  "eps_fy0", "eps_fy1", "estimate_currency", "fy1_analysts"}
+                  "eps_fy0", "eps_fy1", "estimate_currency", "fy1_analysts",
+                  "market_cap_converted"}
 # Optional quarterly growth-pair lines (see Company.revenue_latest_q): patchable,
 # never required — a from-scratch rescue supplies revenue_ttm_prior instead.
 _GROWTH_PAIR = {"revenue_latest_q", "revenue_year_ago_q"}

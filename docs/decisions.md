@@ -58,3 +58,7 @@ VIX, breadth and index drawdown are recorded in snapshots (#16), never used as s
 
 ## D17 — Date format (2026-11-22)
 ISO 8601 (YYYY-MM-DD) everywhere in code, data, caches, exports, file names and docs: unambiguous across locales, sorts chronologically, and parses natively. Human-facing report views (HTML, #49) display '10 Jul 2026'. Never use numeric DD/MM or MM/DD.
+
+## D18 — Market cap in the statement currency; annual basis on missing quarterly capex or SBC (2026-11-22)
+P/S divides market cap by revenue, so both must share a currency. Yahoo and FMP quote market cap in the trading currency, but foreign filers report in their own (PDD, BABA, JD, BIDU in CNY; ASML, CCEP, FER in EUR). When the two currencies are known and differ, market cap is converted into the statement currency at a same-run FX rate (`market_cap_converted`, noted in `low_confidence`); no rate means a skip, never a guess. An unknown statement currency changes nothing. A converted cap hides the unlock prices until #62 derives them from the traded price (ADR ratios make market cap / shares wrong). Separately, a quarterly capex gap, or a quarterly SBC gap while the annual statement reports SBC, moves the whole company to the annual basis (one basis, never mixed, `low_confidence` names the reason); SBC is never assumed 0 on TTM when the annual statement shows it. Thresholds and routing are unchanged. Run diff (QQQ, same raw Yahoo frames, 2026-11-22): no verdict changed among names that screened before; ABNB, APP and PDD went from skipped to screened.
+
