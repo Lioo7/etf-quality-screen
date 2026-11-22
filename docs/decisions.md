@@ -47,3 +47,9 @@ Screens run monthly (QQQ and SPY), by hand from a terminal via scripts/monthly_r
 
 ## D14 — Universe scope (2026-11-20)
 Monthly runs cover the de-duplicated union of QQQ and SPY; S&P 400 mid caps run quarterly, after earnings seasons. Small caps and non-US direct listings stay out of the routine (data quality); they remain possible ad hoc via --holdings. Curated ADR lists run ad hoc.
+
+## D15 — License (2026-11-21)
+No license (all rights reserved) for now, to keep commercial options open. Opening later (MIT, AGPL, PolyForm Noncommercial) stays possible; closing after an open release is not. Copyright covers the code, not the documented method. External contributions would need a contributor agreement first. Dependencies are permissively licensed and impose no obligation to open the code.
+
+## D16 — Sentiment, moving averages and cost basis are context, not signals (refines D11 and D12, 2026-11-21)
+VIX, breadth and index drawdown are recorded in snapshots (#16), never used as signals (fear/greed indices show weak, unstable predictive power). Moving-average distance is an informational entry-timing column only (#36). The user's cost basis is never an input to screening or decision rules (disposition effect, Odean 1998). Valuation against a company's own history belongs to #29.
