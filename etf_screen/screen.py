@@ -18,7 +18,9 @@ Verdict pipeline (``evaluate``), in order:
    math. Current revenue > 0 with a zero *prior* year stays a ``NOT_EVALUABLE``
    divide-by-zero case.
 1. The four snapshot filters (Rule of 40, PEG <= 2, P/S guardrail, SBC <= 15%) and
-   two-track routing: the authoritative, fixed core.
+   two-track routing: the authoritative, fixed core. The Rule of 40 and P/S share one
+   revenue-growth figure from ``_snapshot_growth`` (true TTM, else the FY + quarter
+   estimate, D22).
 2. A snapshot qualifier then faces the quality gates: leverage (net debt / FCF <= 3),
    goodwill (<= 40% of assets), ROIC (>= 10%, Track A under ``strict`` only; advisory
    when not computable), earnings quality (cumulative 3-year AdjFCF / NI >= 0.8; N/A,
@@ -81,6 +83,14 @@ RULE40_MIN = 40.0       # revenue growth% + adjusted FCF margin%
 PEG_MAX = 2.0           # Track A only
 SBC_MAX_PCT = 15.0      # SBC as % of revenue
 PS_GUARDRAIL_FACTOR = 0.5  # P/S must be <= factor * revenue growth%
+# Revenue growth for the Rule of 40 and the P/S guardrail (#67, D22): a true TTM pair
+# when the source has one, else the mean of latest-FY growth and the latest-quarter
+# YoY (the estimated TTM growth), never the quarter alone. See ``_snapshot_growth``.
+#: Note prefix the data layer adds when growth is the FY + quarter estimate.
+GROWTH_BLEND_NOTE = "estimated TTM growth: blend of FY and latest quarter"
+#: Advisory note when the latest quarter YoY sits this many points below the growth
+#: used. Informational only: it never changes passed, track or rank.
+GROWTH_DECEL_NOTE_PTS = 15.0
 # One-off items embedded in consensus FY0 EPS (#61, D19): at or above this share of
 # EPS_FY0 (either sign) the PEG test is unadministrable, not failed.
 ONE_OFF_FY0_MAX = 0.10
@@ -267,8 +277,8 @@ class Company:
     revenue_ttm: float          # trailing-twelve-month revenue
     # The TTM revenue one year earlier. NaN when the source cannot expose a
     # summable prior-year TTM (Yahoo caps quarterly statements at ~5 columns,
-    # so quarters 5-8 are unpublished) — growth then derives from the
-    # quarterly YoY pair below, and is NOT_EVALUABLE if that is absent too.
+    # so quarters 5-8 are unpublished) — growth then is the FY + quarter estimate
+    # (revenue_fy* and revenue_*_q below, D22), and NOT_EVALUABLE if that is absent.
     revenue_ttm_prior: float
     ocf_ttm: float              # operating cash flow, TTM
     capex_ttm: float            # capital expenditure, TTM (positive magnitude)
@@ -305,11 +315,15 @@ class Company:
     sector: str = "Unknown"     # GICS-style sector bucket from the data layer
     industry: str = ""          # finer sub-sector (optional)
     # Same-fiscal-quarter revenue pair (RAW statement lines, both sourced —
-    # never an estimated split of a yearly figure) for the growth derivation
-    # when revenue_ttm_prior is not summable from the source. None = the pair
-    # was not sourced; growth falls back to the TTM pair.
+    # never an estimated split of a yearly figure). Half of the estimated TTM
+    # growth when revenue_ttm_prior is not summable; otherwise informational
+    # (the growth_quarter_yoy column and the deceleration note). None = not sourced.
     revenue_latest_q: float | None = None    # newest quarter's revenue
     revenue_year_ago_q: float | None = None  # same fiscal quarter, 1 yr earlier
+    # Latest and prior fiscal-year revenue (raw annual lines, 350-380 days apart), set
+    # only when growth is the FY + quarter estimate (D22). None = not used.
+    revenue_fy: float | None = None
+    revenue_fy_prior: float | None = None
     # First trading date, ISO "YYYY-MM-DD". None = unknown (never guessed): the
     # name is screened normally and flagged ipo_date_unknown, NOT classified.
     ipo_date: str | None = None
@@ -463,6 +477,10 @@ class Result:
     # was made untestable. Carries the verification task; never auto-applied.
     one_off: "OneOffCheck | None" = None
 
+    # Which revenue pair the growth figure came from (D22): "TTM", "annual",
+    # "FY+quarter blend", or "" when growth was not computed.
+    growth_basis: str = ""
+
     @property
     def passed(self) -> bool:
         return self.status is ScreenStatus.PASS
@@ -538,6 +556,11 @@ class Result:
         return self.company.manual_override
 
     @property
+    def growth_quarter_yoy(self) -> float | None:
+        """Latest-quarter revenue YoY % (informational; None when not sourced)."""
+        return _quarter_yoy(self.company)
+
+    @property
     def ps_guardrail(self) -> float:
         """The P/S ceiling for this name (0.5 x revenue growth%)."""
         return PS_GUARDRAIL_FACTOR * self.growth
@@ -570,6 +593,11 @@ class Result:
         if cause in ONE_OFF_STRUCTURAL:
             drop.add(ONE_OFF_UNAVAILABLE.format(cause))
         notes = [n for n in self.company.low_confidence if n not in drop]
+        q = self.growth_quarter_yoy
+        if q is not None and not isnan(self.growth) and \
+                self.growth - q > GROWTH_DECEL_NOTE_PTS:
+            notes.append(f"growth decelerating: latest quarter YoY {q:.1f}% vs growth "
+                         f"used {self.growth:.1f}%")
         if self.unlock_basis == "implied":
             notes.append(UNLOCK_IMPLIED_NOTE)
         elif (self.watchlist and self.company.market_cap_converted
@@ -603,7 +631,7 @@ class Result:
 
 def _period_metrics(
     revenue: float, revenue_prior: float, ocf: float, capex: float, sbc: float,
-    growth_pair: tuple[float, float] | None = None,
+    growth: float | None = None,
 ) -> tuple[float, float, float, float]:
     """Return ``(growth, adj_fcf, adj_margin, rule40)`` for one period.
 
@@ -611,18 +639,48 @@ def _period_metrics(
     snapshot in :func:`evaluate` and the historical years in the consistency
     gate so there is zero methodology drift between them.
 
-    ``growth_pair`` (``(now, year_ago)``) substitutes a same-fiscal-quarter YoY
-    revenue pair into the growth term only — the level ratios (margin, and the
-    Rule-of-40 margin component) stay on the shared ``revenue`` base. It exists
-    for sources that publish too few quarters to sum a true prior-year TTM
-    (see ``Company.revenue_ttm_prior``); historical years never pass it.
+    ``growth`` replaces the growth term only, for the snapshot's estimated TTM
+    growth (see :func:`_snapshot_growth`); the level ratios (margin, and the
+    Rule-of-40 margin component) stay on the shared ``revenue`` base. Historical
+    years never pass it: their growth is always FY over prior FY.
     """
-    growth_now, growth_base = growth_pair if growth_pair else (revenue, revenue_prior)
-    growth = pct(growth_now - growth_base, growth_base)
+    if growth is None:
+        growth = pct(revenue - revenue_prior, revenue_prior)
     adj_fcf = ocf - capex - sbc
     adj_margin = pct(adj_fcf, revenue)
     rule40 = growth + adj_margin
     return growth, adj_fcf, adj_margin, rule40
+
+
+def _quarter_yoy(c: Company) -> float | None:
+    """Latest-quarter revenue YoY %, or None without a positive year-ago quarter."""
+    if c.revenue_latest_q is None or c.revenue_year_ago_q is None \
+            or c.revenue_year_ago_q <= 0:
+        return None
+    return pct(c.revenue_latest_q - c.revenue_year_ago_q, c.revenue_year_ago_q)
+
+
+def _snapshot_growth(c: Company) -> tuple[float, str]:
+    """``(growth %, basis)`` for the Rule of 40 and the P/S guardrail (#67, D22).
+
+    1. A true TTM pair (``revenue_ttm_prior`` finite: 8 quarters, FMP, a fiscal year
+       ending at the newest quarter, or the annual basis) is exact and always wins.
+    2. Otherwise the estimated TTM growth: the mean of latest-FY growth and the
+       latest-quarter YoY. Scored against SEC true-TTM growth on 49 names it beat
+       both inputs alone (docs/investigations/2026-11-growth-definition.md).
+    3. Otherwise NaN -> NOT_EVALUABLE: the quarter YoY alone never decides growth,
+       and a non-positive base is never divided by.
+    """
+    if not isnan(c.revenue_ttm_prior):
+        # "annual" and "override" keep their own label; never claim an unchecked TTM.
+        return (pct(c.revenue_ttm - c.revenue_ttm_prior, c.revenue_ttm_prior),
+                c.basis if c.basis and c.basis != "TTM" else "TTM")
+    q = _quarter_yoy(c)
+    if q is not None and c.revenue_fy is not None and c.revenue_fy_prior is not None \
+            and c.revenue_fy_prior > 0:
+        fy = pct(c.revenue_fy - c.revenue_fy_prior, c.revenue_fy_prior)
+        return (fy + q) / 2, "FY+quarter blend"
+    return nan, ""
 
 
 def evaluate(c: Company, consistency_years: int = 0,
@@ -654,17 +712,13 @@ def evaluate(c: Company, consistency_years: int = 0,
     if c.revenue_ttm <= 0:
         return _pre_revenue_result(c)
 
-    # 2. Snapshot metrics + balance-sheet derived metrics. Growth prefers the
-    # sourced quarterly YoY pair when the provider could not sum a true prior
-    # TTM (a non-positive year-ago quarter falls back to the TTM pair, which
-    # is NaN in that case -> NOT_EVALUABLE, the honest divide-by-zero verdict).
-    growth_pair = None
-    if (c.revenue_latest_q is not None and c.revenue_year_ago_q is not None
-            and c.revenue_year_ago_q > 0):
-        growth_pair = (c.revenue_latest_q, c.revenue_year_ago_q)
+    # 2. Snapshot metrics + balance-sheet derived metrics. Growth is the true TTM
+    # pair when one exists, else the FY + quarter estimate (D22); neither -> NaN
+    # -> NOT_EVALUABLE, the honest divide-by-zero verdict.
+    snapshot_growth, growth_basis = _snapshot_growth(c)
     growth, adj_fcf, adj_margin, rule40 = _period_metrics(
         c.revenue_ttm, c.revenue_ttm_prior, c.ocf_ttm, c.capex_ttm, c.sbc_ttm,
-        growth_pair=growth_pair,
+        growth=snapshot_growth,
     )
     fcf = c.ocf_ttm - c.capex_ttm
     p_s = c.market_cap / c.revenue_ttm if c.revenue_ttm else nan
@@ -914,6 +968,7 @@ def evaluate(c: Company, consistency_years: int = 0,
         unlock_basis=unlock_basis, status=status, track_a=track_a, track_b=track_b,
         track=track, reasons=reasons, consistency=consistency,
         roic_history=roic_hist, margin_profile=margin_prof, one_off=one_off,
+        growth_basis=growth_basis if not isnan(growth) else "",
     )
 
 

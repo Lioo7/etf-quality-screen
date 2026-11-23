@@ -19,7 +19,7 @@ from etf_screen.providers import (_COMPANY_FIELDS, _CACHE_SCHEMA, _extract_yf,
 from etf_screen.screen import (EPS_DECLINE_NOTE, ONE_OFF_FY0_MAX, ScreenStatus,
                                evaluate, fy0_one_off_check, peg_untestable_reason)
 from test_screen import make
-from tests.test_peg_basis import _INFO, _Q_CF, _Q_INC, _estimates, _frame
+from tests.test_peg_basis import _INFO, _Q_CF, _Q_INC, _a_inc, _estimates, _frame
 
 PRICE = 300.0
 
@@ -396,7 +396,7 @@ def _yf(estimates, eh=None, info=None, q_inc=None):
     info = {**_INFO, "country": "United States", "financialCurrency": "USD"} \
         if info is None else info
     q = _frame(_Q_INC, 5) if q_inc is None else q_inc
-    return _extract_yf("TST", q_inc=q, a_inc=None, q_cf=_frame(_Q_CF, 5), a_cf=None,
+    return _extract_yf("TST", q_inc=q, a_inc=_a_inc(), q_cf=_frame(_Q_CF, 5), a_cf=None,
                        info=info, estimates=estimates, earnings_history=eh)
 
 
@@ -407,7 +407,7 @@ def test_unavailable_note_only_for_profitable_names_with_testable_peg():
 
 
 def test_extract_populates_the_fields_and_caches_them():
-    assert "fy0_quarter_eps" in _COMPANY_FIELDS and _CACHE_SCHEMA == "v8"
+    assert "fy0_quarter_eps" in _COMPANY_FIELDS and _CACHE_SCHEMA == "v9"
     assert "street_basis" in _COMPANY_FIELDS
     c = _yf(_estimates(20.0, 24.0))
     assert c.fy0_quarter_eps is None and c.street_basis == "unavailable"

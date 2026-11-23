@@ -13,7 +13,7 @@ import pytest
 
 from etf_screen.providers import YFinanceProvider, _consensus_peg_inputs, _extract_yf
 from etf_screen.screen import ScreenStatus, evaluate
-from test_peg_basis import _Q_CF, _Q_INC, _estimates, _frame
+from test_peg_basis import _Q_CF, _Q_INC, _a_inc, _estimates, _frame
 
 _FX = (1.0, "2026-11-21")
 
@@ -81,7 +81,7 @@ _INFO = {"marketCap": 2000, "shortName": "Foreign Co", "currentPrice": 480.0,
 
 
 def _yf(estimates, fx_lookup, info=_INFO):
-    return _extract_yf("ASMX", q_inc=_frame(_Q_INC, 5), a_inc=None,
+    return _extract_yf("ASMX", q_inc=_frame(_Q_INC, 5), a_inc=_a_inc(),
                        q_cf=_frame(_Q_CF, 5), a_cf=None, info=info,
                        estimates=estimates, fx_lookup=fx_lookup)
 

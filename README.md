@@ -476,11 +476,14 @@ over:**
   twelve months of *both* income and cash-flow quarters, every level metric
   (revenue, OCF/capex/SBC, net income) is a true TTM sum of the newest four.
   Yahoo caps quarterly statements at ~5 columns (observed 2026-07), so the
-  *prior-year* TTM — quarters 5–8 — is usually unpublished; **growth** then
-  comes from the newest quarter vs its date-aligned year-ago counterpart
-  (both raw sourced lines, flagged `growth from latest-quarter YoY`), and the
-  true 8-quarter prior-TTM sum is used whenever Yahoo does provide it. A name
-  without even an aligned quarter pair falls back to the honest **annual**
+  *prior-year* TTM — quarters 5–8 — is usually unpublished. **Growth** (for
+  both the Rule of 40 and the P/S guardrail, D22) uses a true TTM pair whenever
+  one exists: 8 quarters, or a fiscal year ending at the newest quarter.
+  Otherwise it is the mean of the latest fiscal year's growth and the newest
+  quarter's YoY. All four are raw sourced lines, and the case is flagged
+  `estimated TTM growth`. On 49 names this was closer to SEC true-TTM growth
+  than either alone. The quarter YoY is also exported as `growth_quarter_yoy`
+  (informational). A name without both pairs falls back to the honest **annual**
   basis — revenue *and* OCF/capex/SBC all from the latest fiscal year — so
   growth, FCF margin, SBC%, and Rule of 40 share one base. The basis used is
   shown on each name and flagged `low-confidence` when annual. Missing

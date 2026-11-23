@@ -23,6 +23,14 @@ def _frame(label_to_values: dict, n: int):
     ).T
 
 
+def _annual(label_to_values: dict, n: int):
+    """Like _frame, but with fiscal-year columns (Dec year ends, newest first)."""
+    cols = pd.date_range("2025-12-31", periods=n, freq="-1YE")
+    return pd.DataFrame(
+        {label: vals[:n] for label, vals in label_to_values.items()}, index=cols
+    ).T
+
+
 INFO = {"marketCap": 1_000_000, "shortName": "Test Co",
         "forwardPE": 20.0, "forwardEps": 6.0, "trailingEps": 5.0}
 
@@ -46,11 +54,11 @@ def test_ttm_basis_used_when_full_year_available():
     assert not any("ANNUAL" in m for m in c.low_confidence)
 
 
-def test_ttm_basis_from_five_quarters_uses_quarter_yoy_growth():
+def test_ttm_basis_from_five_quarters_estimates_growth_from_fy_and_quarter():
     # Yahoo caps quarterly statements at ~5 columns (observed 2026-07), so the
     # prior-year TTM (quarters 5-8) is unpublished. Levels still sum the newest
-    # 4 quarters (true TTM); growth derives from the date-aligned same-quarter
-    # YoY pair -- both raw sourced lines, never an estimate.
+    # 4 quarters (true TTM); growth is the mean of the latest FY's growth and the
+    # date-aligned quarter YoY (D22) -- four raw sourced lines, flagged.
     q_inc = _frame({
         "Total Revenue": [130, 120, 115, 110, 100],
         "Diluted Average Shares": [10, 10, 10, 10, 11],
@@ -58,21 +66,24 @@ def test_ttm_basis_from_five_quarters_uses_quarter_yoy_growth():
     }, 5)
     q_cf = _frame({"Operating Cash Flow": [30] * 5, "Capital Expenditure": [-5] * 5,
                    "Stock Based Compensation": [2] * 5}, 5)
-    c = _extract_yf("TST", q_inc=q_inc, a_inc=None, q_cf=q_cf, a_cf=None, info=INFO)
+    # Latest FY ended 2025-03-31, three quarters before the newest (2025-12-31).
+    a_inc = pd.DataFrame({"Total Revenue": [440, 400]},
+                         index=pd.to_datetime(["2025-03-31", "2024-03-31"])).T
+    c = _extract_yf("TST", q_inc=q_inc, a_inc=a_inc, q_cf=q_cf, a_cf=None, info=INFO)
     assert c.basis == "TTM"
     assert c.revenue_ttm == 475                            # 130+120+115+110
     assert c.revenue_ttm_prior != c.revenue_ttm_prior      # NaN: not summable
     assert (c.revenue_latest_q, c.revenue_year_ago_q) == (130.0, 100.0)
     assert (c.diluted_shares_now, c.diluted_shares_prior) == (10.0, 11.0)
-    assert any("latest-quarter YoY" in m for m in c.low_confidence)
+    assert any("estimated TTM growth" in m for m in c.low_confidence)
     r = evaluate(c)
     assert r.evaluable
-    assert r.growth == pytest.approx(30.0)                 # (130-100)/100
+    assert r.growth == pytest.approx((10.0 + 30.0) / 2)    # FY 440/400, quarter 130/100
 
 
 def test_eight_quarters_still_uses_true_prior_ttm():
-    # When Yahoo does publish 8 quarters, the true prior-TTM sum wins and the
-    # quarterly YoY pair is not attached.
+    # When Yahoo does publish 8 quarters, the true prior-TTM sum wins; the
+    # quarterly YoY pair stays attached for the informational column only.
     q_inc = _frame({
         "Total Revenue": [130, 120, 115, 110, 100, 95, 90, 85],
         "Diluted Average Shares": [10] * 8,
@@ -83,8 +94,9 @@ def test_eight_quarters_still_uses_true_prior_ttm():
     c = _extract_yf("TST", q_inc=q_inc, a_inc=None, q_cf=q_cf, a_cf=None, info=INFO)
     assert c.basis == "TTM"
     assert c.revenue_ttm == 475 and c.revenue_ttm_prior == 370
-    assert c.revenue_latest_q is None and c.revenue_year_ago_q is None
-    assert not any("latest-quarter YoY" in m for m in c.low_confidence)
+    assert (c.revenue_latest_q, c.revenue_year_ago_q) == (130.0, 100.0)
+    assert not any("estimated TTM growth" in m for m in c.low_confidence)
+    assert evaluate(c).growth == pytest.approx(100 * (475 / 370 - 1))
 
 
 def test_five_quarters_with_a_gap_fall_back_to_annual():
@@ -100,10 +112,10 @@ def test_five_quarters_with_a_gap_fall_back_to_annual():
         index=cols).T
     q_cf = _frame({"Operating Cash Flow": [30] * 4, "Capital Expenditure": [-5] * 4,
                    "Stock Based Compensation": [2] * 4}, 4)
-    a_inc = _frame({"Total Revenue": [400, 350], "Diluted Average Shares": [10, 11],
-                    "Net Income": [70, 55]}, 2)
-    a_cf = _frame({"Operating Cash Flow": [118], "Capital Expenditure": [-18],
-                   "Stock Based Compensation": [9]}, 1)
+    a_inc = _annual({"Total Revenue": [400, 350], "Diluted Average Shares": [10, 11],
+                     "Net Income": [70, 55]}, 2)
+    a_cf = _annual({"Operating Cash Flow": [118], "Capital Expenditure": [-18],
+                    "Stock Based Compensation": [9]}, 1)
     c = _extract_yf("TST", q_inc=q_inc, a_inc=a_inc, q_cf=q_cf, a_cf=a_cf, info=INFO)
     assert c.basis == "annual"
     assert c.revenue_latest_q is None and c.revenue_year_ago_q is None
@@ -122,12 +134,12 @@ def test_annual_basis_uses_annual_cashflow_for_consistency():
     # Only 4 income quarters -> cannot form prior TTM -> annual basis for ALL.
     q_inc = _frame({"Total Revenue": [100] * 4, "Diluted Average Shares": [10] * 4,
                     "Net Income": [20] * 4}, 4)
-    a_inc = _frame({"Total Revenue": [400, 350], "Diluted Average Shares": [10, 11],
-                    "Net Income": [70, 55]}, 2)
+    a_inc = _annual({"Total Revenue": [400, 350], "Diluted Average Shares": [10, 11],
+                     "Net Income": [70, 55]}, 2)
     q_cf = _frame({"Operating Cash Flow": [30] * 4, "Capital Expenditure": [-5] * 4,
                    "Stock Based Compensation": [2] * 4}, 4)
-    a_cf = _frame({"Operating Cash Flow": [118], "Capital Expenditure": [-18],
-                   "Stock Based Compensation": [9]}, 1)
+    a_cf = _annual({"Operating Cash Flow": [118], "Capital Expenditure": [-18],
+                    "Stock Based Compensation": [9]}, 1)
     c = _extract_yf("TST", q_inc=q_inc, a_inc=a_inc, q_cf=q_cf, a_cf=a_cf, info=INFO)
     assert c.basis == "annual"
     # OCF/capex/SBC/net income come from the ANNUAL statement, not the quarter sum.

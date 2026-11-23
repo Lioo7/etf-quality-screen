@@ -22,7 +22,7 @@ from etf_screen.providers import (
 )
 from etf_screen.screen import (UNLOCK_IMPLIED_NOTE, UNLOCK_SUPPRESSED_NOTE, ScreenStatus,
                                evaluate)
-from test_peg_basis import _FMP_EST, _Q_CF, _Q_INC, _fmp_provider, _frame
+from test_peg_basis import _FMP_EST, _Q_CF, _Q_INC, _a_inc, _fmp_provider, _frame
 from test_screen import ACCEPTANCE
 
 NAN = float("nan")
@@ -115,9 +115,11 @@ def test_no_sbc_anywhere_stays_ttm_with_assumed_zero():
 
 def test_unusable_annual_statements_do_not_pull_a_ttm_name_off_ttm():
     # Annual SBC exists but the annual income frame is unusable: keep TTM (assumed-0
-    # SBC, flagged) rather than turn a screenable name into a skip.
-    c = _build(_no_sbc(), a_inc={"Total Revenue": [400], "Diluted Average Shares": [10],
-                                 "Net Income": [80]})
+    # SBC, flagged) rather than turn a screenable name into a skip. Two revenue years
+    # keep the growth pair (D22); one share count makes the annual frame unusable.
+    c = _build(_no_sbc(), a_inc={"Total Revenue": [475, 400],
+                                 "Diluted Average Shares": [10, NAN],
+                                 "Net Income": [80, 70]})
     assert c.basis == "TTM" and c.sbc_assumed_zero
 
 
@@ -211,7 +213,7 @@ def _closes(last):
 
 
 def test_yahoo_current_price_is_the_quote_not_the_history_close():
-    c = _extract_yf("PDD", q_inc=_frame(_Q_INC, 5), a_inc=None, q_cf=_frame(_Q_CF, 5),
+    c = _extract_yf("PDD", q_inc=_frame(_Q_INC, 5), a_inc=_a_inc(), q_cf=_frame(_Q_CF, 5),
                     a_cf=None, info=_INFO, closes=_closes(470.0))
     assert c.current_price == 480.0 and c.ath_price == 470.0
     assert PRICE_FROM_HISTORY_NOTE not in c.low_confidence
@@ -220,17 +222,17 @@ def test_yahoo_current_price_is_the_quote_not_the_history_close():
 def test_yahoo_current_price_falls_back_to_regular_market_price():
     info = {**{k: v for k, v in _INFO.items() if k != "currentPrice"},
             "regularMarketPrice": 475.0}
-    c = _extract_yf("PDD", q_inc=_frame(_Q_INC, 5), a_inc=None, q_cf=_frame(_Q_CF, 5),
+    c = _extract_yf("PDD", q_inc=_frame(_Q_INC, 5), a_inc=_a_inc(), q_cf=_frame(_Q_CF, 5),
                     a_cf=None, info=info, closes=_closes(470.0))
     assert c.current_price == 475.0 and PRICE_FROM_HISTORY_NOTE not in c.low_confidence
 
 
 def test_yahoo_current_price_uses_the_history_close_only_without_a_quote():
     info = {k: v for k, v in _INFO.items() if k != "currentPrice"}
-    c = _extract_yf("PDD", q_inc=_frame(_Q_INC, 5), a_inc=None, q_cf=_frame(_Q_CF, 5),
+    c = _extract_yf("PDD", q_inc=_frame(_Q_INC, 5), a_inc=_a_inc(), q_cf=_frame(_Q_CF, 5),
                     a_cf=None, info=info, closes=_closes(470.0))
     assert c.current_price == 470.0 and PRICE_FROM_HISTORY_NOTE in c.low_confidence
-    none = _extract_yf("PDD", q_inc=_frame(_Q_INC, 5), a_inc=None, q_cf=_frame(_Q_CF, 5),
+    none = _extract_yf("PDD", q_inc=_frame(_Q_INC, 5), a_inc=_a_inc(), q_cf=_frame(_Q_CF, 5),
                        a_cf=None, info=info)
     assert none.current_price is None and PRICE_FROM_HISTORY_NOTE not in none.low_confidence
 
@@ -242,7 +244,7 @@ def test_converted_flag_survives_the_cache_and_the_schema_is_current(tmp_path, m
     from etf_screen.providers import MockProvider
 
     monkeypatch.setattr(cache_mod, "CACHE_ROOT", tmp_path)
-    assert "market_cap_converted" in _COMPANY_FIELDS and _CACHE_SCHEMA == "v8"
+    assert "market_cap_converted" in _COMPANY_FIELDS and _CACHE_SCHEMA == "v9"
     cache = DiskCache("mock")
     stored = asdict(replace(MockProvider().fetch("MSFT"), market_cap_converted=True))
     provider = MockProvider(cache=cache)
