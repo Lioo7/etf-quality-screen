@@ -245,12 +245,16 @@ python -m etf_screen.cli --provider mock --tickers MSFT,GOOGL,CRWD
 # Screen the S&P 500 instead, throttling requests
 python -m etf_screen.cli --universe spy --throttle 1 --limit 50
 
+# Monthly routine: QQQ and SPY as one de-duplicated run; mid caps quarterly
+python -m etf_screen.cli --universe qqq,spy --throttle 0.5
+python -m etf_screen.cli --universe mid --throttle 0.5
+
 # Strict durability and a snapshot-only baseline (no history gate)
 python -m etf_screen.cli --universe qqq --consistency-mode strict
 python -m etf_screen.cli --universe qqq --consistency-years 0
 ```
 
-Flags: `--provider {yfinance,fmp,mock}` · `--universe {qqq,arkk,spy}` · `--holdings PATH`
+Flags: `--provider {yfinance,fmp,mock}` · `--universe {qqq,arkk,spy,mid|sp400}[,...]` · `--holdings PATH`
 · `--max-holdings-age DAYS` (default 14) · `--allow-stale`
 · `--tickers a,b,c` · `--tickers-file PATH` · `--limit N` · `--refresh` (ignore cache) · `--no-cache`
 · `--throttle SECONDS` · `--overrides PATH` · `--export {csv,md}` · `--out PATH`
@@ -560,15 +564,35 @@ stale list silently (D26):
     replicates the index.
 - **`spy`**: a live Wikipedia fetch, labelled "page freshness not verified",
   with a 495–510 count check.
+- **`mid`** (alias `sp400`, S&P 400 mid caps): the same kind of live Wikipedia
+  fetch, with a 395–410 count check and no bundled fallback.
 - **Any failure exits non-zero** with manual download steps. The bundled static
   QQQ list (or an old file) is used only with `--allow-stale`, and is marked
   STALE on the Source line and in the export header.
 
 URLs and the manual steps are in [`holdings/README.md`](holdings/README.md).
 
+### Several universes in one run
+
+`--universe qqq,spy` screens the union once: each name is fetched a single time,
+even when it sits in both indexes. Share-class spellings are normalized first
+(`BRK.B` and `BRK-B` are one name; `GOOG` and `GOOGL` stay two).
+
+- Every name is tagged with the universes it belongs to: a `Univ` column in the
+  shortlist (and a `[qqq;spy]` tag on watchlist and needs-data lines), and a
+  `universes` column in the export, e.g. `qqq;spy`.
+- The header lists each universe's source. If any one universe cannot be
+  resolved, the whole run fails; with `--allow-stale`, a stale part marks the
+  whole run STALE.
+- `--limit N` counts unique names, in first-seen order.
+- The default export file is `etf_screen_qqq+spy_<date>.<ext>`.
+- Membership never changes a verdict or the default ranking. Sector medians,
+  though, are computed over the whole union, so `--rank sector-relative` and the
+  sector-context columns can differ from a single-universe run.
+
 ### Screen any ETF from its holdings CSV
 
-Built-in universes cover QQQ, ARKK and SPY. For **any other ETF** — including actively
+Built-in universes cover QQQ, ARKK, SPY and the S&P 400 (`mid`). For **any other ETF** — including actively
 managed funds with no clean index table, like ARKK — download the issuer's
 holdings CSV (ARK, iShares, SSGA/SPDR, Vanguard, Invesco all publish one) and
 point `--holdings` at it:

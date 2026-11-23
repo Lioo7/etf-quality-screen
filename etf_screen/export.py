@@ -20,7 +20,7 @@ from .screen import UNLOCK_LABEL, Result
 
 # Column order shared by both formats.
 COLUMNS = [
-    "ticker", "name", "sector", "track", "status", "passed", "growth_pct",
+    "ticker", "name", "universes", "sector", "track", "status", "passed", "growth_pct",
     "growth_basis", "growth_quarter_yoy",
     "adj_fcf_margin_pct", "rule40", "p_s", "ps_guardrail", "dilution_pct",
     "sbc_pct", "peg", "net_debt_to_fcf", "goodwill_to_assets", "roic",
@@ -180,14 +180,21 @@ def _skipped_row(ticker: str, name: str, reason: str) -> dict:
     return row
 
 
-def build_rows(results: list[Result], skipped, names: dict[str, str]) -> list[dict]:
-    """Survivors, watchlist, needs-data, then the rest (by Rule of 40), then skipped."""
+def build_rows(results: list[Result], skipped, names: dict[str, str],
+               membership: dict[str, list[str]] | None = None) -> list[dict]:
+    """Survivors, watchlist, needs-data, then the rest (by Rule of 40), then skipped.
+
+    ``membership`` (ticker -> universes) fills the ``universes`` column (#47).
+    """
+    membership = membership or {}
     ordered = sorted(results,
                      key=lambda r: (not r.passed, not r.watchlist, not r.needs_data,
                                     -_safe(r.rule40)))
     rows = [_result_row(r) for r in ordered]
     rows += [_skipped_row(s.ticker, names.get(s.ticker, s.ticker), s.reason)
              for s in skipped]
+    for row in rows:
+        row["universes"] = ";".join(membership.get(row["ticker"], []))
     return rows
 
 
