@@ -1,30 +1,47 @@
 """Resolve the current holdings of an ETF to a list of tickers — key-less.
 
-Strategy, keyed by ETF ticker (QQQ, SPY, ...):
+A named ``--universe`` never silently uses a stale list (#8, D26):
 
-1. **Wikipedia index table** (primary) — free, no API key, reliably parseable.
-2. **Bundled static list** (fallback) — a dated snapshot; emits a loud
-   "stale / as-of" warning so a stale universe is never mistaken for live data.
+* **QQQ, ARKK** read ``holdings/<etf>-holdings.csv``. Its age is the file's own
+  as-of date, else its modification time, never today. A missing file, or one
+  older than ``max_age_days``, is refreshed: ARKK from ARK's public holdings
+  CSV, QQQ from the Nasdaq-100 index list (Nasdaq API; Invesco's download
+  endpoint refuses scripts, and QQQ fully replicates the index). The download
+  is validated, written atomically, and the previous file is kept as ``.bak``.
+  Any failure raises with manual download steps.
+* **SPY** is a live Wikipedia fetch with a constituent-count check; a failure
+  raises.
+* The **bundled static list** is used only with ``allow_stale=True`` and is
+  marked stale everywhere it is shown.
 
-The issuer's official holdings file (Invesco for QQQ, SSGA for SPY) is the most
-authoritative source but its download endpoints are brittle/undocumented, so it
-is intentionally *not* a hard dependency here. The Wikipedia path covers the
-common case; the static list guarantees the tool still runs fully offline.
-
-Every resolution records and surfaces its ``source`` and ``as_of`` date — the
-index rebalances, so provenance matters.
+Every resolution records its ``source`` and ``as_of`` date — the index
+rebalances, so provenance matters.
 """
 
 from __future__ import annotations
 
 import csv
 import io
+import json
+import os
+import shutil
 import sys
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from typing import Callable
 
 USER_AGENT = "etf-quality-screen/0.1 (https://github.com; research tool)"
+# ARK's CDN and the Nasdaq API reject non-browser user agents.
+_BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36 "
+               "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+HOLDINGS_DIR = Path("holdings")
+DEFAULT_MAX_AGE_DAYS = 14
+ARKK_URL = ("https://assets.ark-funds.com/fund-documents/funds-etf-csv/"
+            "ARK_INNOVATION_ETF_ARKK_HOLDINGS.csv")
+NASDAQ100_URL = "https://api.nasdaq.com/api/quote/list-type/nasdaq100"
+_SOURCE_PREFIX = "# source: "
 
 
 @dataclass
@@ -44,23 +61,76 @@ class _WikiSource:
     url: str
     ticker_columns: tuple[str, ...]  # candidate column names holding the symbol
     name_columns: tuple[str, ...] = ()  # candidate column names holding the name
+    count: tuple[int, int] = (50, 10_000)  # accepted constituent count (inclusive)
 
 
-# Registry of ETF -> Wikipedia index table.
+# Registry of ETF -> Wikipedia index table. QQQ left: the Nasdaq-100 page lost
+# its constituents table (2026-11), so QQQ is a local-file universe below.
 _WIKI: dict[str, _WikiSource] = {
-    "QQQ": _WikiSource(
-        "https://en.wikipedia.org/wiki/Nasdaq-100",
-        ("Ticker", "Symbol"),
-        ("Company", "Security"),
-    ),
     "SPY": _WikiSource(
         "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies",
         ("Symbol", "Ticker"),
         ("Security", "Company"),
+        (495, 510),
     ),
 }
 
-# Dated static fallback (as_of below). Used only when Wikipedia fails.
+
+@dataclass
+class _FileSource:
+    """A universe read from ``holdings/<etf>-holdings.csv`` and refreshed from ``url``."""
+
+    url: str
+    count: tuple[int, int]  # accepted constituent count (inclusive)
+    manual: str  # where a person downloads the file by hand
+    to_csv: Callable[[str], tuple[str, str]]  # payload -> (csv text, source label)
+
+
+def _ark_to_csv(payload: str) -> tuple[str, str]:
+    return payload, "ARK ARKK holdings CSV (ark-funds.com)"
+
+
+def _nasdaq_to_csv(payload: str) -> tuple[str, str]:
+    """Nasdaq API JSON -> a ``Date,Fund,Name,Ticker`` CSV; any schema drift raises."""
+    try:
+        data = json.loads(payload)["data"]
+        as_of = datetime.strptime(data["date"].strip(), "%b %d, %Y").date()
+        rows = data["data"]["rows"]
+        out = io.StringIO()
+        w = csv.writer(out)
+        w.writerow(["Date", "Fund", "Name", "Ticker"])
+        for row in rows:
+            w.writerow([as_of.strftime("%m/%d/%Y"), "QQQ",
+                        str(row.get("companyName") or "").strip(),
+                        _required_symbol(row)])
+    except (ValueError, KeyError, TypeError, AttributeError) as exc:
+        raise ValueError(f"unexpected Nasdaq API response ({type(exc).__name__}: {exc})")
+    label = f"Nasdaq-100 index constituents (Nasdaq API, as-of {as_of.isoformat()})"
+    return out.getvalue(), label
+
+
+def _required_symbol(row: dict) -> str:
+    sym = row["symbol"]
+    if not isinstance(sym, str) or not sym.strip():
+        raise ValueError(f"row without a symbol: {row!r}")
+    return sym.strip()
+
+
+_FILES: dict[str, _FileSource] = {
+    "QQQ": _FileSource(
+        NASDAQ100_URL, (90, 110),
+        "the Nasdaq-100 constituents (Nasdaq API or nasdaq.com), or the Invesco QQQ "
+        "holdings CSV from invesco.com",
+        _nasdaq_to_csv,
+    ),
+    "ARKK": _FileSource(
+        ARKK_URL, (20, 70),
+        f"the ARKK holdings CSV from ark-funds.com ({ARKK_URL})",
+        _ark_to_csv,
+    ),
+}
+
+# Dated static fallback (as_of below). Used only with allow_stale=True.
 # Source: live Wikipedia Nasdaq-100 table fetched 2026-07-09 (103 tickers;
 # SPCX added to the index effective 2026-07-07). Prefer --holdings with the
 # official Invesco QQQ CSV when refreshing the example run.
@@ -84,33 +154,161 @@ _STATIC: dict[str, list[str]] = {
 }
 
 
-def resolve(etf: str) -> Holdings:
-    """Resolve ``etf`` holdings, preferring Wikipedia and falling back to static."""
+def resolve(
+    etf: str,
+    *,
+    max_age_days: int = DEFAULT_MAX_AGE_DAYS,
+    allow_stale: bool = False,
+    holdings_dir: Path | None = None,
+    fetch: Callable[[str], str] | None = None,
+    today: date | None = None,
+) -> Holdings:
+    """Resolve ``etf`` holdings; never a silently stale list (see module docstring).
+
+    Raises ``ValueError`` (with manual steps) when no fresh list can be had and
+    ``allow_stale`` is off.
+    """
     etf = etf.upper()
+    today = today or date.today()
+    if etf in _FILES:
+        directory = holdings_dir if holdings_dir is not None else HOLDINGS_DIR
+        try:
+            return _from_file(etf, _FILES[etf], Path(directory), max_age_days, today,
+                              fetch or _http_get)
+        except _StaleFile as stale:
+            if not allow_stale:
+                raise ValueError(str(stale)) from None
+            print(f"WARNING: {stale}", file=sys.stderr)
+            if stale.holdings is not None:
+                return _mark_stale(stale.holdings)
+            return _from_static(etf)
     wiki = _WIKI.get(etf)
     if wiki is not None:
         try:
             tickers, names = _from_wikipedia(wiki)
-            if tickers:
-                return Holdings(
-                    etf, tickers, wiki.url, date.today().isoformat(), False, names)
-        except Exception as exc:  # network/parse failure -> fall back
-            print(
-                f"WARNING: could not resolve {etf} from Wikipedia ({exc}); "
-                f"falling back to bundled static list.",
-                file=sys.stderr,
-            )
-    return _from_static(etf)
+            lo, hi = wiki.count
+            if not lo <= len(tickers) <= hi:
+                raise ValueError(f"{len(tickers)} tickers, expected {lo}-{hi}")
+            return Holdings(
+                etf, tickers,
+                f"Wikipedia (live fetch; page freshness not verified): {wiki.url}",
+                today.isoformat(), False, names)
+        except Exception as exc:  # network/parse/count failure -> loud
+            msg = f"could not resolve {etf} from Wikipedia ({exc})."
+            if not allow_stale:
+                raise ValueError(
+                    f"{msg} Retry later, or pass --tickers / --holdings with a list "
+                    f"you downloaded (e.g. the SSGA SPY daily holdings file).") from None
+            print(f"WARNING: {msg}", file=sys.stderr)
+    return _from_static(etf)  # allow_stale, or an ETF with no live source (raises)
+
+
+class _StaleFile(Exception):
+    """No fresh file could be had; carries the stale local file, if any."""
+
+    def __init__(self, msg: str, holdings: Holdings | None):
+        super().__init__(msg)
+        self.holdings = holdings
+
+
+def _from_file(etf: str, src: _FileSource, directory: Path, max_age_days: int,
+               today: date, fetch: Callable[[str], str]) -> Holdings:
+    path = directory / f"{etf.lower()}-holdings.csv"
+    current: Holdings | None = None
+    unreadable = ""
+    if path.exists():
+        try:
+            current = _read_labelled(path)
+        except ValueError as exc:  # corrupt / not a holdings file: refresh it
+            unreadable = f" ({exc})"
+        else:
+            if _is_fresh(current.as_of, today, max_age_days):
+                return current
+    try:
+        return _refresh(etf, src, path, max_age_days, today, fetch)
+    except Exception as exc:
+        if current is not None:
+            state = f"{path} is stale (as-of {current.as_of})"
+        elif unreadable:
+            state = f"{path} is unreadable{unreadable}"
+        else:
+            state = f"{path} is missing"
+        raise _StaleFile(
+            f"could not refresh {etf} from {src.url} ({exc}); {state}. "
+            f"Download {src.manual}, save it as {path}, and rerun "
+            f"(or use --holdings PATH; --allow-stale accepts an old list).",
+            current,
+        ) from None
+
+
+def _refresh(etf: str, src: _FileSource, path: Path, max_age_days: int, today: date,
+             fetch: Callable[[str], str]) -> Holdings:
+    """Download, validate, then atomically replace ``path`` (old file -> ``.bak``)."""
+    text, label = src.to_csv(fetch(src.url))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        tmp.write_text(f"{_SOURCE_PREFIX}{label}\n{text}", encoding="utf-8")
+        h = holdings_from_csv(tmp)
+        lo, hi = src.count
+        if not lo <= len(h.tickers) <= hi:
+            raise ValueError(f"{len(h.tickers)} tickers, expected {lo}-{hi}")
+        if "file modified date" in h.source:  # mtime of our own tmp file = now
+            raise ValueError("downloaded list carries no as-of date")
+        if not _is_fresh(h.as_of, today, max_age_days):
+            raise ValueError(f"downloaded list is as-of {h.as_of}, not within "
+                             f"{max_age_days} days")
+        if path.exists():
+            shutil.copy2(path, path.with_name(path.name + ".bak"))
+        os.replace(tmp, path)  # one atomic swap; the live path always exists
+    finally:
+        tmp.unlink(missing_ok=True)
+    print(f"{etf}: refreshed from {src.url}, as-of {h.as_of}", file=sys.stderr)
+    return _read_labelled(path)
+
+
+def _read_labelled(path: Path) -> Holdings:
+    """``holdings_from_csv`` plus the source label a refresh wrote on line 1."""
+    h = holdings_from_csv(path)
+    with path.open(encoding="utf-8-sig") as fh:
+        first = fh.readline().strip()
+    if first.startswith(_SOURCE_PREFIX):
+        label = first[len(_SOURCE_PREFIX):]
+        h.source = label if "as-of" in label else f"{label}, as-of {h.as_of}"
+    h.etf = path.name.split("-holdings")[0].upper()
+    return h
+
+
+def _mark_stale(h: Holdings) -> Holdings:
+    h.is_stale = True
+    return h
+
+
+def _is_fresh(as_of: str, today: date, max_age_days: int) -> bool:
+    """0 <= age <= max; an unparseable or future date is never fresh."""
+    try:
+        age = (today - date.fromisoformat(as_of)).days
+    except (TypeError, ValueError):
+        return False
+    return 0 <= age <= max_age_days
+
+
+def _http_get(url: str, user_agent: str = _BROWSER_UA) -> str:
+    """GET ``url`` as text: the module's only network call."""
+    import requests
+
+    resp = requests.get(url, headers={"User-Agent": user_agent,
+                                      "Accept": "application/json, text/csv, */*"},
+                        timeout=30)
+    resp.raise_for_status()
+    return resp.text
 
 
 def _from_wikipedia(wiki: _WikiSource) -> tuple[list[str], dict[str, str]]:
     """Fetch and parse constituent symbols (and names) from a Wikipedia table."""
     import pandas as pd
-    import requests
 
-    resp = requests.get(wiki.url, headers={"User-Agent": USER_AGENT}, timeout=30)
-    resp.raise_for_status()
-    tables = pd.read_html(io.StringIO(resp.text))
+    tables = pd.read_html(io.StringIO(_http_get(wiki.url, USER_AGENT)))
     for table in tables:
         tcol = next((c for c in wiki.ticker_columns if c in table.columns), None)
         if tcol is None:
@@ -210,9 +408,13 @@ def holdings_from_csv(path: str | Path) -> Holdings:
         raise ValueError(f"{p.name}: header found but no valid tickers in the file")
 
     etf = (fund or p.stem).upper()
+    source = f"holdings CSV: {p.name}"
+    if as_of is None:  # no date column: the file's own age, never today (#8)
+        as_of = date.fromtimestamp(p.stat().st_mtime).isoformat()
+        source += " (as-of = file modified date)"
     return Holdings(
-        etf=etf, tickers=tickers, source=f"holdings CSV: {p.name}",
-        as_of=as_of or date.today().isoformat(), is_stale=False, names=names,
+        etf=etf, tickers=tickers, source=source,
+        as_of=as_of, is_stale=False, names=names,
     )
 
 
@@ -285,8 +487,6 @@ def _parse_csv_date(raw: str) -> str | None:
     raw = raw.strip()
     if not raw:
         return None
-    from datetime import datetime
-
     for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%b %d, %Y", "%B %d, %Y", "%m/%d/%y"):
         try:
             return datetime.strptime(raw, fmt).date().isoformat()

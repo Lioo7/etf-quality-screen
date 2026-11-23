@@ -24,7 +24,8 @@ from tabulate import tabulate
 
 from . import __version__, export as export_mod
 from .cache import DiskCache
-from .constituents import holdings_from_csv, resolve, tickers_from_file
+from .constituents import (DEFAULT_MAX_AGE_DAYS, holdings_from_csv, resolve,
+                           tickers_from_file)
 from .overrides import apply_override, company_from_override, load_overrides
 from .providers import DEFAULT_FETCH_TIMEOUT, PROVIDERS, DataProvider, DataUnavailable
 from .screen import (
@@ -48,6 +49,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help="data source (default: yfinance, no API key needed)")
     p.add_argument("--universe", default="qqq",
                    help="ETF whose holdings to screen, e.g. qqq or spy (default: qqq)")
+    p.add_argument("--max-holdings-age", type=int, default=DEFAULT_MAX_AGE_DAYS,
+                   help="qqq/arkk: refresh holdings/<etf>-holdings.csv when older than "
+                        f"N days (default: {DEFAULT_MAX_AGE_DAYS})")
+    p.add_argument("--allow-stale", action="store_true",
+                   help="accept a stale list (old holdings file or the bundled static "
+                        "list) when no fresh one can be had; marked STALE")
     p.add_argument("--holdings", default=None,
                    help="path to an issuer holdings CSV (any ETF: ARK, iShares, "
                         "SSGA, ...); overrides --universe")
@@ -110,7 +117,8 @@ def _resolve_universe(args) -> tuple[list[str], str, str, bool, dict[str, str], 
     if args.holdings:
         h = holdings_from_csv(args.holdings)
         return h.tickers, h.source, h.as_of, h.is_stale, h.names, h.etf.lower()
-    h = resolve(args.universe)
+    h = resolve(args.universe, max_age_days=args.max_holdings_age,
+                allow_stale=args.allow_stale)
     return h.tickers, h.source, h.as_of, h.is_stale, h.names, args.universe
 
 
@@ -178,11 +186,11 @@ def run(args) -> int:
             sector_stats, label)
 
     if args.export:
-        _do_export(args, source, as_of, results, skipped, names, label)
+        _do_export(args, source, as_of, stale, results, skipped, names, label)
     return 0
 
 
-def _do_export(args, source, as_of, results, skipped, names, label) -> None:
+def _do_export(args, source, as_of, stale, results, skipped, names, label) -> None:
     universe = label
     run_date = date.today().isoformat()
     if args.out:
@@ -193,7 +201,8 @@ def _do_export(args, source, as_of, results, skipped, names, label) -> None:
         path = export_mod.DEFAULT_EXPORT_DIR / export_mod.default_filename(
             universe, run_date, args.export)
         path.parent.mkdir(parents=True, exist_ok=True)
-    prov = export_mod.Provenance(args.provider, universe, source, as_of, run_date)
+    prov = export_mod.Provenance(args.provider, universe, source, as_of, run_date,
+                                 stale=stale)
     rows = export_mod.build_rows(results, skipped, names)
     export_mod.export(path, args.export, prov, rows)
     print(f"\nExported {len(rows)} rows to {path}")

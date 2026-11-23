@@ -175,3 +175,21 @@ The checks behind it:
 **Kept out.** Non-US filers. Missing income columns (D23's step check still fails). 52/53-week filers whose Yahoo labels drift more than 10 days (COST). Replacing Yahoo as the main source. Point-in-time history (#54, which reuses `sec.py`).
 
 Evidence: `docs/investigations/2026-11-sec-fill.md`.
+
+## D26 — A named universe is never a silently stale list (2026-11-23)
+**Data-sourcing change, not a spec change (#8).** Gates, thresholds and routing are unchanged; only where the constituent list comes from, and how its age is judged.
+
+- **QQQ, ARKK** read `holdings/<etf>-holdings.csv`. Age = the file's own as-of date, else its modification time; never today (also fixes `--holdings` files without a date column).
+- **Missing, or older than `--max-holdings-age` (14 days)** → download, then validate:
+  - the file parses;
+  - the ticker count is in range: QQQ 90–110, ARKK 20–70;
+  - the as-of date is within the max age.
+
+  On success the file is written atomically, the old one is kept as `.bak`, and the run prints `refreshed from <url>, as-of <date>`. Any failure exits non-zero with manual download steps.
+- **QQQ's source is the Nasdaq-100 index list** (`api.nasdaq.com/api/quote/list-type/nasdaq100`), labelled `Nasdaq-100 index constituents (Nasdaq API, as-of <data.date>)`, never "Invesco QQQ holdings". Invesco's download endpoint returns HTTP 406 to scripts, and QQQ fully replicates the index. The Nasdaq endpoint is unofficial, so a schema change is a loud failure, not a fallback.
+- **SPY** stays a live Wikipedia fetch, labelled `Wikipedia (live fetch; page freshness not verified)`, with a 495–510 count check. A failure is an error. SSGA's official daily xlsx is a possible future source.
+- **The bundled static list, or an old file, only with `--allow-stale`**, and then the Source line and export header say STALE.
+
+**Reason.** The Wikipedia Nasdaq-100 page lost its constituents table (observed 2026-11-19). `--universe qqq` was therefore silently screening the July 2026 static list, with only a stderr warning. A screen run on a stale index can miss additions and keep removed names. An as-of of "today" on an undated file was a fabricated date.
+
+**Kept out.** Other ETFs, HTML scraping, the SSGA xlsx.

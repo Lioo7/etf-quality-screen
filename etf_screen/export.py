@@ -47,6 +47,7 @@ class Provenance:
     source: str
     as_of: str
     run_date: str
+    stale: bool = False  # constituents from a stale list (--allow-stale only)
 
 
 # Default directory for exports (git-ignored, regenerable point-in-time
@@ -212,6 +213,8 @@ def _prov_lines(prov: Provenance) -> list[str]:
         f"provider: {prov.provider}",
         f"universe: {prov.universe}",
         f"constituents source: {prov.source}",
+        *([f"STALE constituents: as-of {prov.as_of}, accepted with --allow-stale"]
+          if prov.stale else []),
         f"data as-of: {prov.as_of}",
         f"run date: {prov.run_date}",
         f"unlock columns: {UNLOCK_LABEL}; unlock_ps_pct / unlock_peg_pct = "

@@ -26,3 +26,4 @@ scratch/
 
 # Raw provider snapshots for offline replay (#74): durable, never committed
 data/snapshots/
+holdings/*.bak
