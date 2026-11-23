@@ -217,10 +217,22 @@ def test_membership_never_changes_status_track_or_default_rank(two, monkeypatch)
 # --- S&P 400 -----------------------------------------------------------------
 
 def _wiki_html(n):
+    """The live page's shape (checked 2026-11-23): a constituents table, then a
+    two-level "changes" table whose Ticker columns must not be picked up."""
+    cells = "<td>Industrials</td><td>Machinery</td><td>City, ST</td><td>view</td>"
     rows = "".join(f"<tr><td>M{chr(65 + i // 26 % 26)}{chr(65 + i % 26)}"
-                   f"{chr(65 + i // 676)}</td><td>Mid {i}</td></tr>" for i in range(n))
-    return (f"<table><tr><th>Symbol</th><th>Security</th></tr>{rows}"
-            f"<tr><td>BRK.B</td><td>Dot Class</td></tr></table>")
+                   f"{chr(65 + i // 676)}</td><td>Mid {i}</td>{cells}</tr>"
+                   for i in range(n))
+    changes = "".join(f"<tr><td>2026-0{m}-01</td><td>NEW{m}</td><td>New</td>"
+                      f"<td>OLD{m}</td><td>Old</td><td>cap</td></tr>" for m in range(1, 9))
+    return ("<table><tr><th>Symbol</th><th>Security</th><th>GICS Sector</th>"
+            "<th>GICS Sub-Industry</th><th>Headquarters Location</th>"
+            f"<th>SEC filings</th></tr>{rows}"
+            f"<tr><td>MOG.A</td><td>Moog</td>{cells}</tr></table>"
+            "<table><tr><th rowspan=2>Date</th><th colspan=2>Added</th>"
+            "<th colspan=2>Removed</th><th rowspan=2>Reason</th></tr>"
+            "<tr><th>Ticker</th><th>Security</th><th>Ticker</th><th>Security</th></tr>"
+            f"{changes}</table>")
 
 
 @pytest.mark.parametrize("name", ["mid", "sp400", "MID"])
@@ -233,17 +245,27 @@ def test_sp400_resolves_from_wikipedia_under_either_name(monkeypatch, name):
     monkeypatch.setattr(constituents, "_http_get", fetch)
     h = resolve(name, today=date(2026, 11, 23))
     assert h.etf == "MID" and len(h.tickers) == 400 and not h.is_stale
-    assert "BRK-B" in h.tickers and h.names["BRK-B"] == "Dot Class"
+    assert "MOG-A" in h.tickers and h.names["MOG-A"] == "Moog"
+    assert not any(t.startswith(("NEW", "OLD")) for t in h.tickers)
     assert urls == ["https://en.wikipedia.org/wiki/List_of_S%26P_400_companies"]
-    assert h.membership["BRK-B"] == ["mid"]
+    assert h.membership["MOG-A"] == ["mid"]
     assert "2026-11-23" == h.as_of
 
 
 @pytest.mark.parametrize("n", [300, 450])
 def test_sp400_count_out_of_range_fails_loudly(monkeypatch, n):
     monkeypatch.setattr(constituents, "_http_get", lambda *_: _wiki_html(n))
-    with pytest.raises(ValueError, match="could not resolve MID"):
+    with pytest.raises(ValueError, match="could not resolve MID") as exc:
         resolve("mid")
+    msg = str(exc.value)
+    assert "List_of_S%26P_400_companies" in msg and "S&P 400 constituent list" in msg
+    assert "SPY" not in msg
+
+
+def test_spy_failure_hint_still_points_to_ssga(monkeypatch):
+    monkeypatch.setattr(constituents, "_http_get", lambda *_: _wiki_html(10))
+    with pytest.raises(ValueError, match="SSGA SPY daily holdings file"):
+        resolve("spy")
 
 
 def test_sp400_has_no_silent_fallback_even_with_allow_stale(monkeypatch):

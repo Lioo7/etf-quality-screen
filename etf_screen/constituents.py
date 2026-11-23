@@ -68,6 +68,7 @@ class _WikiSource:
     ticker_columns: tuple[str, ...]  # candidate column names holding the symbol
     name_columns: tuple[str, ...] = ()  # candidate column names holding the name
     count: tuple[int, int] = (50, 10_000)  # accepted constituent count (inclusive)
+    manual: str = "a holdings list you downloaded"  # the --holdings hint on failure
 
 
 # Registry of ETF -> Wikipedia index table. QQQ left: the Nasdaq-100 page lost
@@ -78,12 +79,16 @@ _WIKI: dict[str, _WikiSource] = {
         ("Symbol", "Ticker"),
         ("Security", "Company"),
         (495, 510),
+        "the SSGA SPY daily holdings file (ssga.com)",
     ),
     "MID": _WikiSource(
         "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies",
         ("Symbol", "Ticker"),
         ("Security", "Company"),
         (395, 410),
+        "an S&P 400 constituent list (the Wikipedia page above, saved as a CSV with "
+        "a Symbol column, or an S&P 400 ETF's holdings file such as SSGA MDY or "
+        "iShares IJH)",
     ),
 }
 
@@ -275,8 +280,8 @@ def _resolve_one(etf: str, max_age_days: int, allow_stale: bool, holdings_dir: P
             msg = f"could not resolve {etf} from Wikipedia ({exc})."
             if not allow_stale:
                 raise ValueError(
-                    f"{msg} Retry later, or pass --tickers / --holdings with a list "
-                    f"you downloaded (e.g. the SSGA SPY daily holdings file).") from None
+                    f"{msg} Retry later ({wiki.url}), or pass --tickers / --holdings "
+                    f"with {wiki.manual}.") from None
             print(f"WARNING: {msg}", file=sys.stderr)
     return _from_static(etf)  # allow_stale, or an ETF with no live source (raises)
 
