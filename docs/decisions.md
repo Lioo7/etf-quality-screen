@@ -132,3 +132,14 @@ Evidence: `docs/investigations/2026-11-growth-definition.md`.
 **Reason.** `_row()` drops NaN cells, so "the newest 4" was the newest 4 *finite* cells: a missing quarter was replaced by the year-ago one. On 10 affected names, that sum missed SEC's true TTM revenue by −7.8% to +1.0% (median −2.5%). Each branch annual figure equals SEC's FY value exactly. On the 2026-11-22 QQQ + SPY snapshot, 53 names move from TTM to annual, and one verdict flips: APH PASS → REJECTED (net debt / FCF 3.1 on FY2025 FCF against post-acquisition debt; SEC's true TTM gives 2.68, so the stale fallback is wrong there). Most gaps sit in calendar 2026-06-30 (fiscal Q2), not fiscal Q4. #54's SEC data could later supply the missing quarter from 10-Q facts instead of the annual fallback.
 
 Evidence: `docs/investigations/2026-11-ttm-gaps.md`.
+
+## D24 — ROIC stays advisory in trend mode (2026-11-23)
+**Kept, not a spec change (#45).** ROIC >= 10% gates Track A under `strict` only. In `trend` (the CLI default) it stays advisory, on both the current figure and the multi-year median. Definition unchanged: pre-tax operating income / (total debt + total equity - cash).
+
+**Reason.** On the 2026-11-19 QQQ and SPY exports (and QQQ 2026-08-03, SPY 2026-07-11), no Track A PASS or WATCHLIST name has current ROIC below 10%. The profitable qualifiers that do (KDP, MRVL, SNPS, ALB, HPE, OMC, WAT) are already rejected by leverage, goodwill, earnings quality or consistency, so (a) gating current ROIC in trend flips nothing. (b) Gating the median flips SHOP, SNDK, RDDT (PASS) and PLTR (WATCHLIST) to REJECTED. Their ROIC is 23–160% now, and the low medians come from pre-profit, spin-off or trough years. Forgiving those years is the purpose of trend mode. RDDT has 2 usable years, so its median is thin evidence. The median stays visible (`roic_median`, `roic_durable`).
+
+**Blind spots.** The ratio means nothing for financials (IBKR 3,333%, AMP 308%). Buybacks push equity low or negative (MA 106%; FTNT and VRSN not computable, never a fail). Expensed R&D understates invested capital in software.
+
+**Revisit** when a trend-mode Track A PASS or WATCHLIST name shows current ROIC < 10% that no blind spot explains. Check this in the monthly runs (D13).
+
+Evidence: `docs/investigations/2026-11-roic-trend.md`.
