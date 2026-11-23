@@ -60,7 +60,9 @@ _COMPANY_FIELDS = (
 # not shown" note is gone; a v7 entry would still carry that stale note.
 # v9 (#67): growth is the FY + quarter estimate (revenue_fy*); a v8 entry has no FY
 # pair, so its growth would read NOT_EVALUABLE instead of the estimate.
-_CACHE_SCHEMA = "v9"
+# v10 (#71): TTM sums need a gap-free dated window; a v9 entry may hold a sum that
+# skipped a quarter and included the year-ago one.
+_CACHE_SCHEMA = "v10"
 
 # Growth from a fiscal-year pair (#67, D22): within this many days of the newest
 # quarter the latest FY IS the trailing year (exact pair); up to the max lag (three
@@ -68,6 +70,14 @@ _CACHE_SCHEMA = "v9"
 # the annual frame lags the quarters and can't anchor anything.
 _FY_AT_QUARTER_DAYS = 10
 _FY_MAX_LAG_DAYS = 300
+
+# A TTM sum reads one dated, gap-free window of quarters (#71, D23). Adjacent
+# quarter ends 77-119 days apart admit 12- and 16-week quarters (COST, KR); the
+# window must still span one year (4 quarters: 250-300 days, 8: 600-660). Every
+# line is read at the window's dates, within this many days of each.
+_Q_STEP_DAYS = (77, 119)
+_Q_SPAN_DAYS = {4: (250, 300), 8: (600, 660)}
+_Q_MATCH_DAYS = 10
 
 #: Yahoo exposed no quote price, so current_price is the last history close (D20).
 PRICE_FROM_HISTORY_NOTE = "no quote price from source - current price is the last close"
@@ -493,9 +503,31 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
         raise DataUnavailable(f"{ticker}: cash-flow statement unavailable from yfinance")
 
     low_conf: list[str] = []
-    rev_q = _row(q_inc, _REV)
-    shares_q = _row(q_inc, _SHARES)
-    ocf_q = _row(q_cf, _OCF)
+
+    # TTM sums read ONE dated, gap-free window of the newest 4 quarters (#71, D23):
+    # never the newest 4 finite cells, which skip a NaN quarter and pull in the
+    # year-ago one. Revenue, net income, OCF, capex and both share counts must exist
+    # at the window's dates; a gap moves the whole company to the annual basis.
+    window, gap = _quarter_window(q_inc, 4)
+    lines: dict = {}
+    if window is not None:
+        for name, df, labels in (("revenue", q_inc, _REV), ("net income", q_inc, _NET_INCOME),
+                                 ("operating cash flow", q_cf, _OCF)):
+            lines[name], gap = _window_line(df, labels, window, name)
+            if gap:
+                break
+    shares_now = shares_prior = None
+    if window is not None and not gap:
+        year_ago = _year_ago_column(q_inc, window[0])
+        if year_ago is not None:  # no column at all: no TTM growth pair (generic reason)
+            # Year-ago revenue: every growth path needs it, so its gap is dated too.
+            gap = _window_line(q_inc, _REV, [year_ago], "revenue")[1]
+            pair, gap = (None, gap) if gap else _window_line(
+                q_inc, _SHARES, [window[0], year_ago], "diluted shares")
+            if pair:
+                shares_now, shares_prior = pair
+    window8, _ = _quarter_window(q_inc, 8)
+    rev8 = _window_line(q_inc, _REV, window8, "revenue")[0] if window8 else None
 
     # TTM requires a full trailing year of BOTH income and cash flow. Yahoo has
     # capped quarterly statements at ~5 columns (observed 2026-07: MSFT/AAPL/NVDA
@@ -505,7 +537,7 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     # of latest-FY growth and the date-aligned quarter YoY (screen._snapshot_growth).
     # All four are raw sourced lines. The 8-quarter true-prior-TTM path wins when it
     # exists. Without one of these, the annual basis runs: never the quarter alone.
-    full_prior = len(rev_q) >= 8
+    full_prior = rev8 is not None
     rev_by_q = _labeled_row(q_inc, _REV)
     rev_latest_q, rev_year_ago_q = _yoy_quarter_pair(rev_by_q)
     yoy_growth_ok = rev_latest_q is not None and rev_year_ago_q > 0
@@ -521,32 +553,36 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
                  and abs(fy_lag) <= _FY_AT_QUARTER_DAYS)
     fy_blend = (fy_now is not None and yoy_growth_ok
                 and _FY_AT_QUARTER_DAYS < fy_lag <= _FY_MAX_LAG_DAYS)
-    ttm_ok = (len(rev_q) >= 4 and len(shares_q) >= 5 and len(ocf_q) >= 4
-              and (full_prior or fy_is_ttm or fy_blend))
+    window_ok = window is not None and not gap and shares_prior is not None
+    ttm_ok = window_ok and (full_prior or fy_is_ttm or fy_blend)
+    annual_reason = gap  # a dated gap is the precise reason; None -> no TTM growth pair
 
     # Foreign private issuers (20-F / 6-K) often expose quarterly OCF but no quarterly
     # capex or SBC, with complete annual statements (#58). A TTM basis would then
     # skip the name on capex, or assume SBC = 0 while the annual statement shows it.
-    # Either gap moves the WHOLE company to the annual basis, never a mix.
-    annual_reason = None
-    if ttm_ok and len(_row(q_cf, _CAPEX)) < 4:
-        annual_reason = "quarterly capex not reported by source"  # annual, or a precise skip
-    elif (ttm_ok and len(_row(q_cf, _SBC)) < 4 and _labeled_row(a_cf, _SBC)
-          and _annual_usable(a_inc, a_cf)):
-        # Only when the annual statements can carry the name: otherwise keep TTM with
-        # the flagged assumed-zero SBC rather than turn a screenable name into a skip.
-        annual_reason = "quarterly SBC not reported by source"
-    if annual_reason:
-        ttm_ok = False
+    # Either gap moves the WHOLE company to the annual basis, never a mix. A capex or
+    # SBC cell missing inside the window (#71) is the same gap, with its date.
+    if ttm_ok:
+        capex_q, capex_gap = _window_line(q_cf, _CAPEX, window, "capex")
+        sbc_q, sbc_gap = _window_line(q_cf, _SBC, window, "SBC")
+        if capex_q is None:
+            # annual, or a precise skip
+            annual_reason = capex_gap or "quarterly capex not reported by source"
+        elif (sbc_q is None and _labeled_row(a_cf, _SBC) and _annual_usable(a_inc, a_cf)):
+            # Only when the annual statements can carry the name: otherwise keep TTM with
+            # the flagged assumed-zero SBC rather than turn a screenable name into a skip.
+            annual_reason = sbc_gap or "quarterly SBC not reported by source"
+        if annual_reason:
+            ttm_ok = False
 
     revenue_fy = revenue_fy_prior = None
     if ttm_ok:
         basis = "TTM"
-        revenue_ttm = sum(rev_q[:4])
+        revenue_ttm = sum(lines["revenue"])
         # The quarter pair stays attached on every TTM path: the estimate's second
         # half, else informational (growth_quarter_yoy, deceleration note).
         if full_prior:
-            revenue_prior = sum(rev_q[4:8])  # true TTM pair wins
+            revenue_prior = sum(rev8[4:8])  # true TTM pair wins
         elif fy_is_ttm:
             revenue_prior = fy_prior  # the FY ending at the newest quarter is the TTM
         else:
@@ -557,21 +593,21 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
                 f"{GROWTH_BLEND_NOTE} (FY ended {fy_end:%Y-%m-%d}; source exposes "
                 f"<8 quarters, prior-year TTM not summable)"
             )
-        shares_now, shares_prior = shares_q[0], shares_q[4]
         cf = q_cf
 
         def amount(labels):
-            vals = _row(cf, labels)
-            return (sum(vals[:4]), True) if len(vals) >= 4 else (None, False)
+            vals = _window_line(cf, labels, window, "cash flow")[0]
+            return (sum(vals), True) if vals is not None else (None, False)
     else:
         rev_latest_q = rev_year_ago_q = None  # annual basis: TTM pair only
         basis = "annual"
         rev_a = _row(a_inc, _REV)
         shares_a = _row(a_inc, _SHARES)
         if len(rev_a) < 2:
+            why = f"; {annual_reason}" if annual_reason else ""
             raise DataUnavailable(
                 f"{ticker}: annual revenue history too short ({len(rev_a)} year(s)) "
-                f"from yfinance")
+                f"from yfinance{why}")
         span = _fy_span_days(_labeled_row(a_inc, _REV))
         if span is not None and not 350 <= span <= 380:
             # A fiscal-year change: growth over a stub period would be an artifact.
@@ -602,19 +638,21 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     sbc_raw, sbc_found = amount(_SBC)
     sbc_assumed_zero = not sbc_found
     sbc = sbc_raw if sbc_found else 0.0
-    if sbc_assumed_zero:
+    sbc_gap = _window_line(q_cf, _SBC, window, "SBC")[1] if basis == "TTM" else None
+    if sbc_assumed_zero and sbc_gap and " missing for " in sbc_gap:
+        # The row exists but one window quarter is empty: never a 3-quarter sum (#71).
+        low_conf.append(f"{sbc_gap} - assumed 0")
+    elif sbc_assumed_zero:
         low_conf.append("SBC not reported by source - assumed 0")
     elif _sbc_row_absent(a_cf):
         low_conf.append("annual SBC not reported by source - assumed 0 in history")
 
     # Net income gates routing -> source it on the SAME basis as revenue, and
     # raise rather than default if Yahoo doesn't expose the line.
-    ni_vals = _row(q_inc if basis == "TTM" else a_inc, _NET_INCOME)
     if basis == "TTM":
-        if len(ni_vals) < 4:
-            raise DataUnavailable(f"{ticker}: net income unavailable from yfinance")
-        net_income_ttm = sum(ni_vals[:4])
+        net_income_ttm = sum(lines["net income"])  # in the window: checked above
     else:
+        ni_vals = _row(a_inc, _NET_INCOME)
         if not ni_vals:
             raise DataUnavailable(f"{ticker}: net income unavailable from yfinance")
         net_income_ttm = ni_vals[0]
@@ -653,13 +691,21 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
 
     # Operating income (EBIT) for ROIC, on the SAME basis as revenue. Absent ->
     # NaN so ROIC is treated as not-computable (advisory), never a false reject.
-    ebit_vals = _row(q_inc if basis == "TTM" else a_inc, _EBIT)
-    ebit_found = len(ebit_vals) >= 4 if basis == "TTM" else bool(ebit_vals)
-    if ebit_found:
-        operating_income = sum(ebit_vals[:4]) if basis == "TTM" else ebit_vals[0]
+    # A gap inside the TTM window stays advisory too (#71): NaN with the dated note,
+    # never a basis switch, so ROIC can't move a verdict through the basis.
+    ebit_gap = None
+    if basis == "TTM":
+        ebit_q, ebit_gap = _window_line(q_inc, _EBIT, window, "operating income (EBIT)")
+        operating_income = sum(ebit_q) if ebit_q is not None else None
     else:
+        ebit_vals = _row(a_inc, _EBIT)
+        operating_income = ebit_vals[0] if ebit_vals else None
+    if operating_income is None:
         operating_income = float("nan")
-        low_conf.append("operating income (EBIT) not reported - ROIC not computable")
+        dated = ebit_gap and " missing for " in ebit_gap
+        low_conf.append(
+            f"{ebit_gap.removeprefix('quarterly ')} - ROIC not computable" if dated
+            else "operating income (EBIT) not reported - ROIC not computable")
 
     # Balance-sheet snapshot (most-recent column). Cash / total assets / total
     # equity are REQUIRED; goodwill and total debt get the assumed-zero treatment.
@@ -831,6 +877,61 @@ def _yoy_quarter_pair(rev_by_col: dict) -> tuple[float | None, float | None]:
         if 350 <= delta_days <= 380:
             return float(rev_by_col[newest]), float(rev_by_col[col])
     return None, None
+
+
+def _quarter_window(q_inc, n: int) -> tuple[list | None, str | None]:
+    """The newest ``n`` quarter-end dates for a TTM sum, or ``(None, reason)`` (#71).
+
+    Anchored on the newest column with finite revenue. Adjacent ends must lie
+    77-119 days apart and the window must span one year (``_Q_SPAN_DAYS``), so a
+    missing column can never pull an older quarter in. Undated columns or no
+    quarterly revenue -> ``(None, None)``: no window, and no gap to report.
+    """
+    rev = _labeled_row(q_inc, _REV)
+    if not rev or not all(isinstance(c, date) for c in q_inc.columns):
+        return None, None
+    anchor = max(rev)
+    cols = sorted((c for c in q_inc.columns if c <= anchor), reverse=True)[:n]
+    if len(cols) < n:
+        return None, f"fewer than {n} quarter columns"
+    lo, hi = _Q_STEP_DAYS
+    for newer, older in zip(cols, cols[1:]):
+        step = (newer - older).days
+        if not lo <= step <= hi:
+            return None, (f"quarter columns {older:%Y-%m-%d} and {newer:%Y-%m-%d} "
+                          f"are {step} days apart")
+    span = (cols[0] - cols[-1]).days
+    lo, hi = _Q_SPAN_DAYS[n]
+    if not lo <= span <= hi:
+        return None, f"newest {n} quarter columns span {span} days"
+    return cols, None
+
+
+def _window_line(df, labels, dates, name: str) -> tuple[list | None, str | None]:
+    """A line's values at each window date (within ``_Q_MATCH_DAYS``), or ``(None, reason)``.
+
+    Never a partial list: a NaN or absent cell at any date is a gap, reported with
+    that date. A row absent from the frame is "not reported by source".
+    """
+    row = _labeled_row(df, labels)
+    if not row:
+        return None, f"quarterly {name} not reported by source"
+    vals = []
+    for d in dates:
+        hit = [v for c, v in row.items()
+               if isinstance(c, date) and abs((c - d).days) <= _Q_MATCH_DAYS]
+        if not hit:
+            return None, f"quarterly {name} missing for {d:%Y-%m-%d}"
+        vals.append(hit[0])
+    return vals, None
+
+
+def _year_ago_column(q_inc, newest):
+    """The quarter column 350-380 days before ``newest`` (the year-ago quarter), or None."""
+    for col in sorted(q_inc.columns, reverse=True):
+        if isinstance(col, date) and 350 <= (newest - col).days <= 380:
+            return col
+    return None
 
 
 def _fy_growth_pair(rev_by_fy: dict, rev_by_q: dict) -> tuple[float | None, float | None,
@@ -1329,6 +1430,9 @@ class FMPProvider(DataProvider):
         cf = self._get(f"cash-flow-statement/{ticker}", period="quarter", limit=8)
         if len(inc) < 8 or len(cf) < 4:
             raise DataUnavailable(f"{ticker}: FMP returned too few quarters")
+        gap = _fmp_quarter_gap(inc[:8], cf[:4])
+        if gap:  # sums are positional: never across a missing quarter (#71)
+            raise DataUnavailable(f"{ticker}: FMP {gap} - TTM not summable")
 
         revenue_ttm = sum(q["revenue"] for q in inc[:4])
         revenue_prior = sum(q["revenue"] for q in inc[4:8])
@@ -1340,12 +1444,16 @@ class FMPProvider(DataProvider):
 
         ocf = sum(q["operatingCashFlow"] for q in cf[:4])
         capex = abs(sum(q["capitalExpenditure"] for q in cf[:4]))
-        sbc_found = any(q.get("stockBasedCompensation") is not None for q in cf[:4])
-        sbc = sum(q.get("stockBasedCompensation") or 0 for q in cf[:4])
+        # All 4 quarters or none: a partial SBC sum would understate it unflagged (#71).
+        sbc_missing = [q.get("date") for q in cf[:4] if q.get("stockBasedCompensation") is None]
+        sbc_found = not sbc_missing
+        sbc = sum(q["stockBasedCompensation"] for q in cf[:4]) if sbc_found else 0.0
 
         low_conf: list[str] = []
-        if not sbc_found:
+        if len(sbc_missing) == 4:
             low_conf.append("SBC not reported by source - assumed 0")
+        elif sbc_missing:
+            low_conf.append(f"quarterly SBC missing for {sbc_missing[0]} - assumed 0")
 
         # Operating income (EBIT) for ROIC; absent -> NaN (ROIC not computable).
         if any(q.get("operatingIncome") is None for q in inc[:4]):
@@ -1514,6 +1622,34 @@ def _fmp_annual_history(
 def _fmp_num(v) -> float | None:
     """``float(v)`` or ``None`` — best-effort optional numeric field from FMP JSON."""
     return None if v is None else float(v)
+
+
+def _fmp_quarter_gap(inc: list[dict], cf: list[dict]) -> str | None:
+    """Why FMP's positional quarter sums would cross a gap, or None (#71).
+
+    The 8 income records must form one dated window (``_quarter_window`` rules) and
+    the 4 cash-flow records must sit at the newest 4 income dates.
+    """
+    try:
+        dates = [date.fromisoformat(str(q["date"])[:10]) for q in inc]
+    except (KeyError, ValueError):
+        return "quarterly income records undated"
+    lo, hi = _Q_STEP_DAYS
+    for newer, older in zip(dates, dates[1:]):
+        step = (newer - older).days
+        if not lo <= step <= hi:
+            return f"quarter records {older} and {newer} are {step} days apart"
+    lo, hi = _Q_SPAN_DAYS[8]
+    if not lo <= (dates[0] - dates[-1]).days <= hi:
+        return f"8 quarter records span {(dates[0] - dates[-1]).days} days"
+    try:
+        cf_dates = [date.fromisoformat(str(q["date"])[:10]) for q in cf]
+    except (KeyError, ValueError):
+        return "quarterly cash-flow records undated"
+    for d in dates[:4]:
+        if not any(abs((c - d).days) <= _Q_MATCH_DAYS for c in cf_dates):
+            return f"quarterly cash flow missing for {d}"
+    return None
 
 
 def _days_between(earlier: str, later: str) -> int:

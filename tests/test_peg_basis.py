@@ -314,14 +314,17 @@ def test_old_cache_entries_are_not_read(tmp_path, monkeypatch):
 
 # --- FMP end to end (fake HTTP) ---------------------------------------------
 def _fmp_provider(monkeypatch, estimates, profile_ccy="USD", reported_ccy="USD",
-                  estimates_error=None):
+                  estimates_error=None, q_dates=None, cf_dates=None, cf_sbc=None):
     from etf_screen.providers import DataUnavailable, FMPProvider
 
+    quarter_ends = ["2026-09-30", "2026-06-30", "2026-03-31", "2025-12-31",
+                    "2025-09-30", "2025-06-30", "2025-03-31", "2024-12-31"]
     q = [{"revenue": 100 + i, "weightedAverageShsOutDil": 10, "netIncome": 20,
           "operatingIncome": 25, "reportedCurrency": reported_ccy,
-          "date": "2026-09-30"} for i in range(8)]
+          "date": d} for i, d in enumerate(q_dates or quarter_ends)]
     cf = [{"operatingCashFlow": 30, "capitalExpenditure": -5,
-           "stockBasedCompensation": 2} for _ in range(4)]
+           "stockBasedCompensation": s, "date": d}
+          for d, s in zip(cf_dates or quarter_ends[:4], cf_sbc or [2] * 4)]
     bal = [{"cashAndCashEquivalents": 300, "totalAssets": 1500,
             "totalStockholdersEquity": 1000, "goodwill": 0, "totalDebt": 0}]
     annual = [{"date": "2025-12-31", "reportedCurrency": reported_ccy,

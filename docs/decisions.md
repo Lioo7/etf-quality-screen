@@ -117,6 +117,18 @@ Every input is a raw sourced line; nothing is extrapolated. Thresholds (40, 0.5,
 
 On the 46 sampled TTM-basis names, the branch's verdict equals the verdict under SEC growth for all 46; the old rule matched 43.
 
-**Caveats.** One snapshot and 49 names. Rerun in another quarter (D13). The Rule of 40 pairs the estimated growth with a true TTM margin, the same period mix the old quarter growth had. The cache schema moves to v9.
+**Caveats.** One snapshot and 49 names. Rerun in another quarter (D13). The Rule of 40 pairs the estimated growth with a true TTM margin, the same period mix the old quarter growth had. The cache schema moves to v9. TTM sums read a dated, gap-free window of quarters (D23, #71).
 
 Evidence: `docs/investigations/2026-11-growth-definition.md`.
+
+## D23 — TTM sums require a dated, gap-free window (2026-11-23)
+**Bug fix (#71), not a spec change; amends how D22's TTM inputs are read.** Every TTM line (revenue, net income, OCF, capex, SBC, EBIT) and both diluted share counts are read at one window: the newest 4 quarter-end columns, anchored on the newest column with finite revenue. Adjacent ends must be 77–119 days apart, which admits 12- and 16-week quarters (COST, KR). Newest minus oldest must be 250–300 days (8-quarter window: 600–660). Cash-flow cells match the window dates within 10 days. The year-ago share count comes from the column 350–380 days back, not from the 5th finite cell.
+
+- A gap in revenue, net income, OCF, capex or either share count → the whole company moves to the annual basis, with `quarterly <line> missing for <date>`. When the latest FY ends at the newest quarter, the annual basis is the exact trailing year.
+- An SBC gap follows the #58 rule: annual basis when the annual statement reports SBC, else TTM with SBC assumed 0 (flagged). An EBIT gap stays advisory: ROIC is not computable, with the dated note, and the basis doesn't change.
+- FMP sums by record position, so a gap in its 8 income or 4 cash-flow records raises `DataUnavailable` with the date.
+- Nothing is summed across a gap, and nothing is filled. Thresholds are unchanged. The cache schema moves to v10.
+
+**Reason.** `_row()` drops NaN cells, so "the newest 4" was the newest 4 *finite* cells: a missing quarter was replaced by the year-ago one. On 10 affected names, that sum missed SEC's true TTM revenue by −7.8% to +1.0% (median −2.5%). Each branch annual figure equals SEC's FY value exactly. On the 2026-11-22 QQQ + SPY snapshot, 53 names move from TTM to annual, and one verdict flips: APH PASS → REJECTED (net debt / FCF 3.1 on FY2025 FCF against post-acquisition debt; SEC's true TTM gives 2.68, so the stale fallback is wrong there). Most gaps sit in calendar 2026-06-30 (fiscal Q2), not fiscal Q4. #54's SEC data could later supply the missing quarter from 10-Q facts instead of the annual fallback.
+
+Evidence: `docs/investigations/2026-11-ttm-gaps.md`.
