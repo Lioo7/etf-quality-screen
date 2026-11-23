@@ -33,7 +33,7 @@ A CLI stock screener that strictly separates screening logic from data sourcing.
 Flow: `cli.run()` → `constituents.resolve()` / `--tickers` → `provider.fetch()` → `overrides.apply_override()` → `screen.evaluate()` → `screen.rank()` → report + optional `export`.
 
 - `screen.py`: pure logic, no IO. The verdict pipeline and status semantics are documented in its module docstring. `ScreenStatus` is the single verdict source; `Result.passed` etc. are derived properties, so set `status`, never those.
-- `providers.py`: the only network code; providers raise `DataUnavailable` rather than fabricate. Provider rules: `.claude/rules/providers.md`.
+- `providers.py` and `sec.py` (SEC companyfacts for D23 window gaps, D25): the only network code; providers raise `DataUnavailable` rather than fabricate. Provider rules: `.claude/rules/providers.md`.
 - `constituents.py`: ETF → tickers (Wikipedia, bundled static fallback, `--holdings` CSV, `--tickers-file`). Precedence: `--tickers` > `--tickers-file` > `--holdings` > `--universe`.
 - `overrides.py` (git-ignored `overrides.json` beats the provider), `cache.py` (per-day JSON cache), `export.py` (CSV/Markdown).
 

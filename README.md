@@ -490,6 +490,28 @@ over:**
   quarterly capex (or SBC the annual statement reports), typical of foreign
   filers, also forces the annual basis. Market cap is converted to the
   statement currency before P/S when the two differ (D18).
+- **A quarter missing from Yahoo's window is filled from SEC filings** (D25).
+  Every TTM line reads one dated, gap-free window of quarters (D23). When Yahoo
+  has a hole in it, the screen takes that quarter's value from the company's
+  10-Q / 10-K XBRL facts (SEC companyfacts) instead of falling back to a stale
+  annual figure. Only filed values are used, filed on or before the run date:
+  - a direct 3-month fact;
+  - otherwise two year-to-date facts subtracted, such as 6M − 3M or, for a
+    fiscal Q4, the 10-K year minus the 9-month YTD;
+  - diluted shares only from a direct 3-month fact, never derived.
+
+  A line fills only when SEC agrees with Yahoo within 1% on the quarters Yahoo
+  does report, and every filled cell is flagged in `low_confidence`. This applies
+  to US filers (statements in USD) only. If SEC lacks the fact or the request
+  fails, the D23 annual fallback stands; the name is never skipped. The fill needs
+  a contact `SEC_USER_AGENT` (SEC fair-access policy), e.g. in the git-ignored
+  project `.env`, which the CLI reads without overriding the shell:
+
+  ```bash
+  echo 'SEC_USER_AGENT="Your Name your.email@example.com"' >> .env   # never commit
+  ```
+
+  Without it, gaps stay on the annual fallback, with a note.
 - **SBC may be absent.** If the cash-flow statement is retrieved but has no SBC
   line, SBC is treated as 0, the name is flagged `sbc_assumed_zero`, and it is
   listed in a dedicated "SBC assumed 0" review section (utilities/staples like CEG
