@@ -108,6 +108,7 @@ Every input is a raw sourced line; nothing is extrapolated. Thresholds (40, 0.5,
 - **Why not the weighted blend.** It was adopted only if at least as good as the 50/50 average. It wins at the median but has more large misses (7 vs 5), a higher mean (6.6 vs 5.9) and is worse at k = 3, where most names sit in November.
 - **Why not latest FY alone.** Its error grows with FY staleness, and it is much worse on acquisitive or spiking names (OMC, KDP, SNDK).
 - **BKNG.** Yahoo's quarters equal its 10-Q facts ($8.893B vs $9.008B). The −1.3% quarter is real, not misaligned; its true TTM growth is +8.0%.
+- **Revisit:** the staleness-weighted blend beat the 50/50 average at k = 1 (median 0.4 vs 2.7, n = 8) and lost at k = 3 (3.1 vs 2.6, n = 32). Re-score both at the next quarterly SEC comparison (D13), when more names sit at k = 0–1. Don't adopt a per-k rule on this sample alone.
 
 **Same-snapshot diff** (2026-11-22, 518 names): 3 flips.
 - AAPL REJECTED → WATCHLIST: exact TTM 15.1, Rule of 40 40.6; P/S and PEG still block.
