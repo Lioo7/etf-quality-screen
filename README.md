@@ -232,7 +232,8 @@ key**.
 ## Usage
 
 ```bash
-# Default: screen the live Nasdaq-100 via yfinance (no key needed)
+# Default: screen the Nasdaq-100 via yfinance (no key needed); the constituent
+# list in holdings/qqq-holdings.csv refreshes itself when older than 14 days
 python -m etf_screen.cli --universe qqq
 
 # Cheap validation against an explicit ticker list
@@ -249,7 +250,8 @@ python -m etf_screen.cli --universe qqq --consistency-mode strict
 python -m etf_screen.cli --universe qqq --consistency-years 0
 ```
 
-Flags: `--provider {yfinance,fmp,mock}` · `--universe <etf>` · `--holdings PATH`
+Flags: `--provider {yfinance,fmp,mock}` · `--universe {qqq,arkk,spy}` · `--holdings PATH`
+· `--max-holdings-age DAYS` (default 14) · `--allow-stale`
 · `--tickers a,b,c` · `--tickers-file PATH` · `--limit N` · `--refresh` (ignore cache) · `--no-cache`
 · `--throttle SECONDS` · `--overrides PATH` · `--export {csv,md}` · `--out PATH`
 · `--sector-context` · `--rank {rule40,sector-relative}`
@@ -436,9 +438,8 @@ Four real runs are checked in under [`examples/`](examples/) (QQQ refreshed
 
 - **[QQQ (Nasdaq-100)](examples/qqq-2026-07-14.md)** — the flagship full-universe
   run against the 2026-07-09 Wikipedia snapshot (103 tickers, including SPCX):
-  3 survivors + 2 watchlist. Prefer regenerating from the official Invesco CSV
-  at [`holdings/qqq-holdings.csv`](holdings/qqq-holdings.csv) via `--holdings`
-  when you have it (see below).
+  3 survivors + 2 watchlist. Regenerate it with `--universe qqq`, which keeps
+  `holdings/qqq-holdings.csv` fresh (see below).
 - **[SPY (S&P 500)](examples/spy-2026-07-11.md)** — the widest run (~500 names);
   the same fixed gates at scale.
 - **[Israel tech ADRs](examples/israel-tech-adr-2026-07-11.md)** — a curated
@@ -453,14 +454,11 @@ Each doc carries a provenance header, the ranked shortlist, the sector-context
 view, and the full result set (collapsed). They are point-in-time snapshots —
 the header records exactly which data produced them.
 
-**Refreshing the QQQ example from the official Invesco holdings CSV** (preferred
-source of truth over Wikipedia/static):
+**Refreshing the QQQ example.** `--universe qqq` refreshes
+`holdings/qqq-holdings.csv` (git-ignored) when it is missing or older than 14 days:
 
 ```bash
-# Drop the downloaded Invesco QQQ holdings CSV here (git-ignored):
-#   holdings/qqq-holdings.csv
-.venv/bin/python -m etf_screen.cli \
-  --holdings holdings/qqq-holdings.csv \
+.venv/bin/python -m etf_screen.cli --universe qqq \
   --consistency-years 3 --sector-context \
   --export md --out examples/qqq-$(date +%F).md
 ```
@@ -548,22 +546,29 @@ Canned data for offline runs and the test suite.
 
 ## Constituents
 
-`constituents.resolve(etf)` resolves holdings **key-lessly**, keyed by ETF ticker:
+`constituents.resolve(etf)` resolves holdings **key-lessly** and never uses a
+stale list silently (D26):
 
-1. **Wikipedia index table** (primary) — e.g. the Nasdaq-100 "Current components"
-   table for `QQQ`, the S&P 500 list for `SPY`. Records the URL as `source` and
-   the fetch date as `as_of`.
-2. **Bundled static list** (fallback) — a dated snapshot, emitted with a loud
-   `STALE / as-of` warning. The index rebalances, so provenance is always shown.
+- **`qqq`, `arkk`**: read `holdings/<etf>-holdings.csv`. When the file is missing
+  or older than `--max-holdings-age` (default 14 days), it is downloaded,
+  validated, and swapped in atomically, with the old file kept as `.bak`.
+  - Age comes from the file's own as-of date, else its modification time, never
+    today.
+  - ARKK comes from ARK's public holdings CSV.
+  - QQQ comes from the Nasdaq-100 index list (Nasdaq API) and is labelled as
+    the index list. Invesco's download endpoint rejects scripts, and QQQ fully
+    replicates the index.
+- **`spy`**: a live Wikipedia fetch, labelled "page freshness not verified",
+  with a 495–510 count check.
+- **Any failure exits non-zero** with manual download steps. The bundled static
+  QQQ list (or an old file) is used only with `--allow-stale`, and is marked
+  STALE on the Source line and in the export header.
 
-The issuer's official holdings file (Invesco / SSGA) is the most authoritative
-source, but its download *endpoints* are brittle and undocumented, so they are
-deliberately not a hard dependency. Instead, you can hand the tool a file you
-downloaded yourself — see below.
+URLs and the manual steps are in [`holdings/README.md`](holdings/README.md).
 
 ### Screen any ETF from its holdings CSV
 
-Built-in universes cover QQQ and SPY. For **any other ETF** — including actively
+Built-in universes cover QQQ, ARKK and SPY. For **any other ETF** — including actively
 managed funds with no clean index table, like ARKK — download the issuer's
 holdings CSV (ARK, iShares, SSGA/SPDR, Vanguard, Invesco all publish one) and
 point `--holdings` at it:
