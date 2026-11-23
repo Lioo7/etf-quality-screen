@@ -25,13 +25,14 @@ from dataclasses import asdict
 from datetime import date, timedelta
 
 from .cache import DiskCache
-from .screen import (EPS_DECLINE_NOTE, FMP_CAUSE, MIXED_BASIS_CAUSE, NON_US_CAUSE,
-                     ONE_OFF_UNAVAILABLE, AnnualPeriod, Company)
+from .screen import (EPS_DECLINE_NOTE, FMP_CAUSE, GROWTH_BLEND_NOTE, MIXED_BASIS_CAUSE,
+                     NON_US_CAUSE, ONE_OFF_UNAVAILABLE, AnnualPeriod, Company)
 
 # Fields persisted to / restored from the disk cache.
 _COMPANY_FIELDS = (
     "ticker", "revenue_ttm", "revenue_ttm_prior",
-    "revenue_latest_q", "revenue_year_ago_q", "ocf_ttm", "capex_ttm",
+    "revenue_latest_q", "revenue_year_ago_q", "revenue_fy", "revenue_fy_prior",
+    "ocf_ttm", "capex_ttm",
     "sbc_ttm", "diluted_shares_now", "diluted_shares_prior", "market_cap",
     "forward_pe", "forward_eps_growth", "net_income_ttm",
     "total_debt", "cash_and_equivalents", "goodwill", "total_assets",
@@ -57,7 +58,16 @@ _COMPANY_FIELDS = (
 # from the first #61 commit holds quarters for adjusted reporters (false one-offs).
 # v8 (#62): current_price is the quote (FMP: set at all) and the #58 "unlock price
 # not shown" note is gone; a v7 entry would still carry that stale note.
-_CACHE_SCHEMA = "v8"
+# v9 (#67): growth is the FY + quarter estimate (revenue_fy*); a v8 entry has no FY
+# pair, so its growth would read NOT_EVALUABLE instead of the estimate.
+_CACHE_SCHEMA = "v9"
+
+# Growth from a fiscal-year pair (#67, D22): within this many days of the newest
+# quarter the latest FY IS the trailing year (exact pair); up to the max lag (three
+# quarters, with 52/53-week slack) it anchors the FY + quarter estimate; beyond it
+# the annual frame lags the quarters and can't anchor anything.
+_FY_AT_QUARTER_DAYS = 10
+_FY_MAX_LAG_DAYS = 300
 
 #: Yahoo exposed no quote price, so current_price is the last history close (D20).
 PRICE_FROM_HISTORY_NOTE = "no quote price from source - current price is the last close"
@@ -490,14 +500,29 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     # TTM requires a full trailing year of BOTH income and cash flow. Yahoo has
     # capped quarterly statements at ~5 columns (observed 2026-07: MSFT/AAPL/NVDA
     # all expose exactly 5 income quarters), so the prior-year TTM (quarters
-    # 5-8) is usually unpublished. Growth then comes from the newest quarter vs
-    # its date-aligned year-ago counterpart — both raw sourced lines, never an
-    # estimate. The 8-quarter true-prior-TTM path is kept for when it exists.
+    # 5-8) is usually unpublished. Growth then (#67, D22) is exact when the latest
+    # fiscal year ends at the newest quarter (prior FY = prior TTM), else the mean
+    # of latest-FY growth and the date-aligned quarter YoY (screen._snapshot_growth).
+    # All four are raw sourced lines. The 8-quarter true-prior-TTM path wins when it
+    # exists. Without one of these, the annual basis runs: never the quarter alone.
     full_prior = len(rev_q) >= 8
-    rev_latest_q, rev_year_ago_q = _yoy_quarter_pair(_labeled_row(q_inc, _REV))
+    rev_by_q = _labeled_row(q_inc, _REV)
+    rev_latest_q, rev_year_ago_q = _yoy_quarter_pair(rev_by_q)
     yoy_growth_ok = rev_latest_q is not None and rev_year_ago_q > 0
+    fy_now, fy_prior, fy_lag = _fy_growth_pair(_labeled_row(a_inc, _REV), rev_by_q)
+    # Both FY paths also need the aligned quarter pair. The exact path divides the
+    # summed quarters by the prior FY, so it also needs the newest 5 revenue columns
+    # gap-free (newest to 5th = one year): only then are they a trailing year whose
+    # 5th column is the year-ago quarter that diluted_shares_prior reads.
+    q_cols = sorted(rev_by_q, reverse=True)
+    quarters_contiguous = (len(q_cols) >= 5 and isinstance(q_cols[0], date)
+                           and 350 <= (q_cols[0] - q_cols[4]).days <= 380)
+    fy_is_ttm = (fy_now is not None and yoy_growth_ok and quarters_contiguous
+                 and abs(fy_lag) <= _FY_AT_QUARTER_DAYS)
+    fy_blend = (fy_now is not None and yoy_growth_ok
+                and _FY_AT_QUARTER_DAYS < fy_lag <= _FY_MAX_LAG_DAYS)
     ttm_ok = (len(rev_q) >= 4 and len(shares_q) >= 5 and len(ocf_q) >= 4
-              and (full_prior or yoy_growth_ok))
+              and (full_prior or fy_is_ttm or fy_blend))
 
     # Foreign private issuers (20-F / 6-K) often expose quarterly OCF but no quarterly
     # capex or SBC, with complete annual statements (#58). A TTM basis would then
@@ -514,17 +539,23 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     if annual_reason:
         ttm_ok = False
 
+    revenue_fy = revenue_fy_prior = None
     if ttm_ok:
         basis = "TTM"
         revenue_ttm = sum(rev_q[:4])
+        # The quarter pair stays attached on every TTM path: the estimate's second
+        # half, else informational (growth_quarter_yoy, deceleration note).
         if full_prior:
-            revenue_prior = sum(rev_q[4:8])
-            rev_latest_q = rev_year_ago_q = None  # true TTM pair wins
+            revenue_prior = sum(rev_q[4:8])  # true TTM pair wins
+        elif fy_is_ttm:
+            revenue_prior = fy_prior  # the FY ending at the newest quarter is the TTM
         else:
-            revenue_prior = float("nan")  # not summable -> quarterly YoY pair
+            revenue_prior = float("nan")  # not summable -> FY + quarter estimate
+            revenue_fy, revenue_fy_prior = fy_now, fy_prior
+            fy_end = max(_labeled_row(a_inc, _REV))
             low_conf.append(
-                "growth from latest-quarter YoY (source exposes <8 quarters; "
-                "prior-year TTM not summable)"
+                f"{GROWTH_BLEND_NOTE} (FY ended {fy_end:%Y-%m-%d}; source exposes "
+                f"<8 quarters, prior-year TTM not summable)"
             )
         shares_now, shares_prior = shares_q[0], shares_q[4]
         cf = q_cf
@@ -541,6 +572,12 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
             raise DataUnavailable(
                 f"{ticker}: annual revenue history too short ({len(rev_a)} year(s)) "
                 f"from yfinance")
+        span = _fy_span_days(_labeled_row(a_inc, _REV))
+        if span is not None and not 350 <= span <= 380:
+            # A fiscal-year change: growth over a stub period would be an artifact.
+            raise DataUnavailable(
+                f"{ticker}: newest two fiscal years are {span} days apart "
+                f"(fiscal-year change) - no like-for-like growth pair from yfinance")
         if len(shares_a) < 2:
             raise DataUnavailable(f"{ticker}: no diluted share history from yfinance")
         if a_cf is None:
@@ -548,7 +585,7 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
         revenue_ttm, revenue_prior = rev_a[0], rev_a[1]
         shares_now, shares_prior = shares_a[0], shares_a[1]
         cf = a_cf
-        low_conf.append(f"metrics on ANNUAL basis ({annual_reason or 'Yahoo exposed <8 quarters'})")
+        low_conf.append(f"metrics on ANNUAL basis ({annual_reason or 'no TTM growth pair'})")
 
         def amount(labels):
             vals = _row(cf, labels)
@@ -679,6 +716,7 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     return Company(
         ticker=ticker, revenue_ttm=revenue_ttm, revenue_ttm_prior=revenue_prior,
         revenue_latest_q=rev_latest_q, revenue_year_ago_q=rev_year_ago_q,
+        revenue_fy=revenue_fy, revenue_fy_prior=revenue_fy_prior,
         ocf_ttm=ocf, capex_ttm=capex, sbc_ttm=sbc,
         diluted_shares_now=shares_now, diluted_shares_prior=shares_prior,
         market_cap=market_cap, market_cap_converted=cap_converted,
@@ -793,6 +831,39 @@ def _yoy_quarter_pair(rev_by_col: dict) -> tuple[float | None, float | None]:
         if 350 <= delta_days <= 380:
             return float(rev_by_col[newest]), float(rev_by_col[col])
     return None, None
+
+
+def _fy_growth_pair(rev_by_fy: dict, rev_by_q: dict) -> tuple[float | None, float | None,
+                                                              int | None]:
+    """``(latest_fy, prior_fy, lag_days)`` for the D22 growth, or ``(None, None, None)``.
+
+    The two newest fiscal years must sit 350-380 days apart (a fiscal-year change
+    never pairs unequal years) with a positive prior year. ``lag_days`` is how far
+    the newest quarter lies past the latest FY end; the caller decides whether the
+    FY is the TTM itself (about 0) or recent enough to anchor the estimate.
+    """
+    if len(rev_by_fy) < 2 or not rev_by_q:
+        return None, None, None
+    fys = sorted(rev_by_fy, reverse=True)
+    try:
+        span = (fys[0] - fys[1]).days
+        lag = (max(rev_by_q) - fys[0]).days
+    except TypeError:  # string-labeled columns -> can't verify alignment
+        return None, None, None
+    if not 350 <= span <= 380 or rev_by_fy[fys[1]] <= 0:
+        return None, None, None
+    return float(rev_by_fy[fys[0]]), float(rev_by_fy[fys[1]]), lag
+
+
+def _fy_span_days(rev_by_fy: dict) -> int | None:
+    """Days between the two newest fiscal-year columns (None: < 2 or undated)."""
+    fys = sorted(rev_by_fy, reverse=True)
+    if len(fys) < 2:
+        return None
+    try:
+        return (fys[0] - fys[1]).days
+    except TypeError:
+        return None
 
 
 def _bal_amount(bal, labels):

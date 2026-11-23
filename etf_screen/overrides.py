@@ -24,9 +24,10 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from math import isnan
 from pathlib import Path
 
-from .screen import Company
+from .screen import GROWTH_BLEND_NOTE, Company
 
 DEFAULT_PATH = "overrides.json"
 
@@ -45,9 +46,10 @@ _BALANCE_SHEET = {
 _INFORMATIONAL = {"ipo_date", "current_price", "ath_price", "price_3mo_ago",
                   "eps_fy0", "eps_fy1", "estimate_currency", "fy1_analysts",
                   "market_cap_converted"}
-# Optional quarterly growth-pair lines (see Company.revenue_latest_q): patchable,
-# never required — a from-scratch rescue supplies revenue_ttm_prior instead.
-_GROWTH_PAIR = {"revenue_latest_q", "revenue_year_ago_q"}
+# Optional growth-estimate lines (quarter and FY pairs, see Company.revenue_latest_q
+# and revenue_fy, D22): patchable, never required — a from-scratch rescue supplies
+# revenue_ttm_prior instead, and a finite revenue_ttm_prior always wins.
+_GROWTH_PAIR = {"revenue_latest_q", "revenue_year_ago_q", "revenue_fy", "revenue_fy_prior"}
 # Fields a user may override / supply. Scalar snapshot lines only — annual
 # `history` is intentionally not overridable here, so an override-rescued name
 # carries no history and lands in INSUFFICIENT_HISTORY when the gate runs.
@@ -86,6 +88,12 @@ def apply_override(company: Company, fields: dict) -> Company:
         updated.sbc_assumed_zero = False
         updated.low_confidence = [m for m in updated.low_confidence
                                   if "assumed 0" not in m]
+    # A supplied prior-year TTM makes the true pair win (D22): the FY + quarter
+    # estimate note no longer describes the growth used.
+    if changes.get("revenue_ttm_prior") is not None and \
+            not isnan(changes["revenue_ttm_prior"]):
+        updated.low_confidence = [m for m in updated.low_confidence
+                                  if not m.startswith(GROWTH_BLEND_NOTE)]
     return updated
 
 

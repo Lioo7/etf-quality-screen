@@ -21,6 +21,7 @@ entry when new research shapes a decision.
 | Lynch's six stock categories include cyclicals, where a low P/E can mark a peak. | Lynch, *One Up on Wall Street* | CYCLICAL flag (#15), Lynch lens (#27) |
 | A P/E at half the growth rate (PEG 0.5) is very positive; at twice the growth rate (PEG 2) very negative. Lynch's growth is a multi-year rate. | Lynch, *One Up on Wall Street* | PEG ceiling 2 kept (#20, D21) |
 | Own audit, Nov 2026: median PEG 0.52 across SPY (mixed GAAP/adjusted basis); Energy names at "0 of 4 yrs" (SBC row absent); a memory maker passing trend consistency on one boom year; a lender passing on cash-flow metrics. | Repo exports, results/*_2026-11-19.md | #5/#6, #4, #15, #9 |
+| Own audit, Nov 2026: against SEC true-TTM revenue growth (49 names), the latest-quarter YoY and latest-FY growth each miss by a median of 4–5 points; their mean misses by 2.3. FY error grows with months since the FY end. | SEC companyfacts vs the 2026-11-22 Yahoo snapshot, `docs/investigations/2026-11-growth-definition.md` | One growth figure for the Rule of 40 and P/S (#67, D22) |
 | Opportunistic insider trades predict returns; routine ones don't | Cohen, Malloy & Pomorski, J. Finance 67(3), 2012 | #51 |
 | CEO ownership > 10% is followed by 4–10% annual abnormal returns, strongest with weak governance | von Lilienfeld-Toal & Ruenzi, J. Finance 69(3), 2014 | #52 |
 | About 40% of US stocks suffered permanent 70%+ declines | J.P. Morgan, "The Agony & the Ecstasy" (2014, 2024) | #55, D12 |

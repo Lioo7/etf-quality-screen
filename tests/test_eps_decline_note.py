@@ -5,7 +5,7 @@ import pytest
 from etf_screen.providers import (EPS_DECLINE_NOTE, _eps_decline_note, _extract_yf,
                                   _yf_revenue_growth)
 from etf_screen.screen import ScreenStatus, evaluate
-from tests.test_peg_basis import _INFO, _Q_CF, _Q_INC, _estimates, _frame
+from tests.test_peg_basis import _INFO, _Q_CF, _Q_INC, _a_inc, _estimates, _frame
 
 
 def _rev(fy0, fy1):
@@ -13,7 +13,7 @@ def _rev(fy0, fy1):
 
 
 def _yf(eps, rev):
-    return _extract_yf("TST", q_inc=_frame(_Q_INC, 5), a_inc=None,
+    return _extract_yf("TST", q_inc=_frame(_Q_INC, 5), a_inc=_a_inc(),
                        q_cf=_frame(_Q_CF, 5), a_cf=None, info=_INFO,
                        estimates=eps, revenue_estimates=rev)
 

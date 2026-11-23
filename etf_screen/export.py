@@ -21,6 +21,7 @@ from .screen import UNLOCK_LABEL, Result
 # Column order shared by both formats.
 COLUMNS = [
     "ticker", "name", "sector", "track", "status", "passed", "growth_pct",
+    "growth_basis", "growth_quarter_yoy",
     "adj_fcf_margin_pct", "rule40", "p_s", "ps_guardrail", "dilution_pct",
     "sbc_pct", "peg", "net_debt_to_fcf", "goodwill_to_assets", "roic",
     "roic_median", "roic_years", "roic_durable",
@@ -129,6 +130,8 @@ def _result_row(r: Result) -> dict:
     return {
         "ticker": r.ticker, "name": r.name, "sector": r.sector, "track": r.track,
         "status": r.status.name, "passed": r.passed, "growth_pct": _num(r.growth),
+        "growth_basis": r.growth_basis or "N/A",
+        "growth_quarter_yoy": _num(r.growth_quarter_yoy, 1),
         "adj_fcf_margin_pct": _num(r.adj_margin), "rule40": _num(r.rule40),
         "p_s": _num(r.p_s), "ps_guardrail": _num(r.ps_guardrail),
         "dilution_pct": _num(r.dilution), "sbc_pct": _num(r.sbc_pct),

@@ -106,6 +106,13 @@ _INFO = {"marketCap": 2000, "shortName": "Test Co", "currentPrice": 480.0,
          "currency": "USD", "forwardPE": 99.0, "forwardEps": 6.0, "trailingEps": 1.0}
 
 
+def _a_inc():
+    """Annual revenue whose FY ends at the newest quarter: an exact TTM pair (D22)
+    with the same 30% growth the quarter YoY gives, so verdicts stay as designed."""
+    cols = pd.to_datetime(["2025-12-31", "2024-12-31"])
+    return pd.DataFrame({"Total Revenue": [475.0, 475.0 / 1.3]}, index=cols).T
+
+
 def _estimates(fy0, fy1, currency="USD", n_fy1=30):
     return pd.DataFrame(
         {"avg": [fy0, fy1], "numberOfAnalysts": [28, n_fy1],
@@ -115,7 +122,7 @@ def _estimates(fy0, fy1, currency="USD", n_fy1=30):
 
 
 def _yf(estimates, info=_INFO):
-    return _extract_yf("TST", q_inc=_frame(_Q_INC, 5), a_inc=None,
+    return _extract_yf("TST", q_inc=_frame(_Q_INC, 5), a_inc=_a_inc(),
                        q_cf=_frame(_Q_CF, 5), a_cf=None, info=info,
                        estimates=estimates)
 
@@ -163,7 +170,8 @@ class _FakeTicker:
             {"Cash And Cash Equivalents": [300] * 5, "Total Assets": [1500] * 5,
              "Stockholders Equity": [1000] * 5, "Total Debt": [0] * 5,
              "Goodwill": [0] * 5}, 5)
-        self.income_stmt = self.cashflow = self.balance_sheet = None
+        self.income_stmt = _a_inc()
+        self.cashflow = self.balance_sheet = None
         self.info = dict(_INFO)
 
     def history(self, **kw):
