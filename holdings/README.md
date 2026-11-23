@@ -25,6 +25,7 @@ read `holdings/<etf>-holdings.csv` and keep it fresh on their own (#8, D26).
 | `qqq` | `https://api.nasdaq.com/api/quote/list-type/nasdaq100` (JSON; `data.date` is the as-of) | `Nasdaq-100 index constituents (Nasdaq API, as-of <date>)` | 90–110 |
 | `arkk` | `https://assets.ark-funds.com/fund-documents/funds-etf-csv/ARK_INNOVATION_ETF_ARKK_HOLDINGS.csv` | `ARK ARKK holdings CSV (ark-funds.com), as-of <date>` | 20–70 |
 | `spy` | Wikipedia S&P 500 list, live fetch (no file here) | `Wikipedia (live fetch; page freshness not verified)` | 495–510 |
+| `mid` / `sp400` | Wikipedia S&P 400 list, live fetch (no file here) | `Wikipedia (live fetch; page freshness not verified)` | 395–410 |
 
 **QQQ uses the index list, not Invesco's file.** Invesco's QQQ holdings download
 endpoint rejects scripted requests (HTTP 406), so it has no stable direct URL. QQQ

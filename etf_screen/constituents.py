@@ -11,11 +11,15 @@ A named ``--universe`` never silently uses a stale list (#8, D26):
   Any failure raises with manual download steps.
 * **SPY** is a live Wikipedia fetch with a constituent-count check; a failure
   raises.
+* **MID** (S&P 400 mid caps; alias ``sp400``) is the same kind of live
+  Wikipedia fetch as SPY, with no static fallback.
 * The **bundled static list** is used only with ``allow_stale=True`` and is
   marked stale everywhere it is shown.
 
 Every resolution records its ``source`` and ``as_of`` date — the index
-rebalances, so provenance matters.
+rebalances, so provenance matters. :func:`resolve_union` screens several
+universes as one de-duplicated list and tags each name with the universes it
+belongs to (#47); one failing part fails the whole union.
 """
 
 from __future__ import annotations
@@ -29,7 +33,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 USER_AGENT = "etf-quality-screen/0.1 (https://github.com; research tool)"
 # ARK's CDN and the Nasdaq API reject non-browser user agents.
@@ -54,6 +58,8 @@ class Holdings:
     as_of: str        # ISO date the data is current as of
     is_stale: bool     # True when served from the bundled fallback
     names: dict[str, str] = field(default_factory=dict)  # ticker -> company name
+    # ticker -> universes it belongs to (lowercase, in the order given; #47)
+    membership: dict[str, list[str]] = field(default_factory=dict)
 
 
 @dataclass
@@ -73,7 +79,16 @@ _WIKI: dict[str, _WikiSource] = {
         ("Security", "Company"),
         (495, 510),
     ),
+    "MID": _WikiSource(
+        "https://en.wikipedia.org/wiki/List_of_S%26P_400_companies",
+        ("Symbol", "Ticker"),
+        ("Security", "Company"),
+        (395, 410),
+    ),
 }
+
+# Alternative universe names -> the registry key.
+_ALIASES = {"SP400": "MID"}
 
 
 @dataclass
@@ -168,8 +183,71 @@ def resolve(
     Raises ``ValueError`` (with manual steps) when no fresh list can be had and
     ``allow_stale`` is off.
     """
-    etf = etf.upper()
-    today = today or date.today()
+    h = _resolve_one(_ALIASES.get(etf.upper(), etf.upper()), max_age_days, allow_stale,
+                     holdings_dir, fetch, today or date.today())
+    h.membership = {t: [h.etf.lower()] for t in h.tickers}
+    return h
+
+
+#: Separates per-universe source labels in a union's ``source``.
+UNION_SEP = " | "
+
+
+def resolve_union(etfs: Sequence[str], **kwargs) -> Holdings:
+    """Resolve several universes into one de-duplicated list with membership tags.
+
+    Tickers keep first-seen order and are de-duplicated on one normalized form
+    (``BRK.B`` and ``BRK-B`` are one name; ``GOOG`` and ``GOOGL`` stay two). Any
+    part that cannot be resolved raises: a union never hides a failing part.
+    ``as_of`` is the oldest part's date, ``is_stale`` is any part's. A single
+    universe comes back with its own ``source`` unchanged. ``kwargs`` go to
+    :func:`resolve`.
+    """
+    keys: list[str] = []
+    for e in etfs:
+        key = _ALIASES.get(e.strip().upper(), e.strip().upper())
+        if key and key not in keys:
+            keys.append(key)
+    if not keys:
+        raise ValueError("no universe given")
+    parts = [resolve(k, **kwargs) for k in keys]  # raises on the first failing part
+    tickers: list[str] = []
+    names: dict[str, str] = {}
+    membership: dict[str, list[str]] = {}
+    for h in parts:
+        tag = h.etf.lower()
+        for raw in h.tickers:
+            t = _normalize(raw.strip().upper())
+            if t not in membership:
+                tickers.append(t)
+                membership[t] = []
+            if tag not in membership[t]:
+                membership[t].append(tag)
+            name = h.names.get(raw) or h.names.get(t)
+            if name:
+                names.setdefault(t, name)
+    if len(parts) == 1:
+        source = parts[0].source
+    else:
+        source = UNION_SEP.join(f"{h.etf}: {h.source}{' [STALE]' if h.is_stale else ''}"
+                                for h in parts)
+    return Holdings("+".join(h.etf for h in parts), tickers, source,
+                    min((h.as_of for h in parts), key=_oldest_first),
+                    any(h.is_stale for h in parts),
+                    names, membership)
+
+
+def _oldest_first(as_of: str) -> tuple[int, str]:
+    """Sort key: an unparseable date counts as oldest (never hides a stale part)."""
+    try:
+        date.fromisoformat(as_of)
+    except (TypeError, ValueError):
+        return (0, str(as_of))
+    return (1, as_of)
+
+
+def _resolve_one(etf: str, max_age_days: int, allow_stale: bool, holdings_dir: Path | None,
+                 fetch: Callable[[str], str] | None, today: date) -> Holdings:
     if etf in _FILES:
         directory = holdings_dir if holdings_dir is not None else HOLDINGS_DIR
         try:

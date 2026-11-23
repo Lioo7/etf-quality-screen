@@ -49,6 +49,7 @@ Screens run monthly (QQQ and SPY), by hand from a terminal via scripts/monthly_r
 
 ## D14 — Universe scope (2026-11-20)
 Monthly runs cover the de-duplicated union of QQQ and SPY; S&P 400 mid caps run quarterly, after earnings seasons. Small caps and non-US direct listings stay out of the routine (data quality); they remain possible ad hoc via --holdings. Curated ADR lists run ad hoc.
+S&P 400 comes from a live Wikipedia fetch under the D26 rules (#47). The standard monthly command is now `--universe qqq,spy`; mid caps (`--universe mid`) run quarterly.
 
 ## D15 — License (2026-11-21)
 No license (all rights reserved) for now, to keep commercial options open. Opening later (MIT, AGPL, PolyForm Noncommercial) stays possible; closing after an open release is not. Copyright covers the code, not the documented method. External contributions would need a contributor agreement first. Dependencies are permissively licensed and impose no obligation to open the code.

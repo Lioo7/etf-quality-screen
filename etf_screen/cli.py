@@ -24,8 +24,8 @@ from tabulate import tabulate
 
 from . import __version__, export as export_mod
 from .cache import DiskCache
-from .constituents import (DEFAULT_MAX_AGE_DAYS, holdings_from_csv, resolve,
-                           tickers_from_file)
+from .constituents import (DEFAULT_MAX_AGE_DAYS, UNION_SEP, holdings_from_csv,
+                           resolve_union, tickers_from_file)
 from .overrides import apply_override, company_from_override, load_overrides
 from .providers import DEFAULT_FETCH_TIMEOUT, PROVIDERS, DataProvider, DataUnavailable
 from .screen import (
@@ -48,7 +48,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--provider", choices=sorted(PROVIDERS), default="yfinance",
                    help="data source (default: yfinance, no API key needed)")
     p.add_argument("--universe", default="qqq",
-                   help="ETF whose holdings to screen, e.g. qqq or spy (default: qqq)")
+                   help="ETF(s) whose holdings to screen: qqq, spy, arkk, mid (alias "
+                        "sp400), or a comma list such as qqq,spy for one de-duplicated "
+                        "run (default: qqq)")
     p.add_argument("--max-holdings-age", type=int, default=DEFAULT_MAX_AGE_DAYS,
                    help="qqq/arkk: refresh holdings/<etf>-holdings.csv when older than "
                         f"N days (default: {DEFAULT_MAX_AGE_DAYS})")
@@ -100,26 +102,36 @@ def build_parser() -> argparse.ArgumentParser:
     return p
 
 
-def _resolve_universe(args) -> tuple[list[str], str, str, bool, dict[str, str], str]:
-    """Return (tickers, source, as_of, is_stale, names, label) for the universe.
+def _resolve_universe(args):
+    """Return (tickers, source, as_of, is_stale, names, label, membership).
 
     Precedence: explicit ``--tickers`` > a ``--tickers-file`` list > a
-    ``--holdings`` CSV > a named ``--universe``.
+    ``--holdings`` CSV > a named ``--universe`` (a comma list is one
+    de-duplicated union, #47). ``membership`` maps each ticker to the
+    universes it belongs to.
     """
     if args.tickers:
         tickers = [t.strip().upper() for t in args.tickers.split(",") if t.strip()]
-        return tickers, "explicit --tickers", date.today().isoformat(), False, {}, "tickers"
+        return (tickers, "explicit --tickers", date.today().isoformat(), False, {},
+                "tickers", _tagged(tickers, "tickers"))
     if args.tickers_file:
         path = Path(args.tickers_file)
         tickers = tickers_from_file(path)
         return (tickers, f"tickers file: {path.name}", date.today().isoformat(),
-                False, {}, path.stem)
+                False, {}, path.stem, _tagged(tickers, path.stem))
     if args.holdings:
         h = holdings_from_csv(args.holdings)
-        return h.tickers, h.source, h.as_of, h.is_stale, h.names, h.etf.lower()
-    h = resolve(args.universe, max_age_days=args.max_holdings_age,
-                allow_stale=args.allow_stale)
-    return h.tickers, h.source, h.as_of, h.is_stale, h.names, args.universe
+        label = h.etf.lower()
+        return (h.tickers, h.source, h.as_of, h.is_stale, h.names, label,
+                _tagged(h.tickers, label))
+    h = resolve_union(args.universe.split(","), max_age_days=args.max_holdings_age,
+                      allow_stale=args.allow_stale)
+    label = h.etf.lower()
+    return h.tickers, h.source, h.as_of, h.is_stale, h.names, label, h.membership
+
+
+def _tagged(tickers: list[str], label: str) -> dict[str, list[str]]:
+    return {t: [label] for t in tickers}
 
 
 def _make_provider(args) -> DataProvider:
@@ -159,7 +171,8 @@ def _screen_one(provider, ticker, override, consistency_years=0,
 
 def run(args) -> int:
     try:
-        tickers, source, as_of, stale, names, label = _resolve_universe(args)
+        (tickers, source, as_of, stale, names, label,
+         membership) = _resolve_universe(args)
     except (ValueError, FileNotFoundError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
@@ -183,14 +196,16 @@ def run(args) -> int:
     sector_stats = annotate_sector_context(results)
 
     _report(args, source, as_of, stale, tickers, results, skipped, names,
-            sector_stats, label)
+            sector_stats, label, membership=membership)
 
     if args.export:
-        _do_export(args, source, as_of, stale, results, skipped, names, label)
+        _do_export(args, source, as_of, stale, results, skipped, names, label,
+                   membership)
     return 0
 
 
-def _do_export(args, source, as_of, stale, results, skipped, names, label) -> None:
+def _do_export(args, source, as_of, stale, results, skipped, names, label,
+               membership=None) -> None:
     universe = label
     run_date = date.today().isoformat()
     if args.out:
@@ -203,14 +218,17 @@ def _do_export(args, source, as_of, stale, results, skipped, names, label) -> No
         path.parent.mkdir(parents=True, exist_ok=True)
     prov = export_mod.Provenance(args.provider, universe, source, as_of, run_date,
                                  stale=stale)
-    rows = export_mod.build_rows(results, skipped, names)
+    rows = export_mod.build_rows(results, skipped, names, membership)
     export_mod.export(path, args.export, prov, rows)
     print(f"\nExported {len(rows)} rows to {path}")
 
 
 def _report(args, source, as_of, stale, tickers, results, skipped, names,
-            sector_stats, label) -> None:
+            sector_stats, label, membership=None) -> None:
     survivors = rank(results, mode=args.rank)
+    membership = membership or {}
+    parts = sorted({u for tags in membership.values() for u in tags})
+    multi = len(parts) > 1
     # PRE_REVENUE, INSUFFICIENT_HISTORY, and RECENT_IPO names each get their own
     # section; keep them out of the ordinary rejection list (a failed-gate name
     # stays a normal reject).
@@ -231,9 +249,18 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
     print("=" * 78)
     print(f"etf-quality-screen v{__version__}  |  run {date.today().isoformat()}")
     print(f"Provider : {args.provider}")
-    print(f"Universe : {'explicit' if args.tickers else label} "
-          f"({len(tickers)} tickers)")
-    print(f"Source   : {source}{'  [STALE]' if stale else ''}")
+    if multi:
+        overlap = sum(1 for tags in membership.values() if len(tags) > 1)
+        listed_total = sum(len(tags) for tags in membership.values())
+        print(f"Universe : {label} ({len(tickers)} of {len(membership)} unique tickers; "
+              f"{listed_total} listed, {overlap} in more than one)")
+        print(f"Source   :{'  [STALE]' if stale else ''}")
+        for part in source.split(UNION_SEP):
+            print(f"  {part}")
+    else:
+        print(f"Universe : {'explicit' if args.tickers else label} "
+              f"({len(tickers)} tickers)")
+        print(f"Source   : {source}{'  [STALE]' if stale else ''}")
     print(f"As-of    : {as_of}")
     print("=" * 78)
 
@@ -288,11 +315,11 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
             _roic_hist(r), _eq_ratio(r), _gm(r),
             _f(r.pct_off_ath), _f(r.three_month_return),
             export_mod.rule40_hist(r),
-        ] for i, r in enumerate(survivors)]
+        ] + ([_univ(r, membership)] if multi else []) for i, r in enumerate(survivors)]
         headers = ["#", "Ticker", "Company", "Sector", "Track", "Growth%",
                    "AdjFCF%", "Rule40", "P/S", "Dil%", "SBC%", "PEG",
                    "NetDebt/FCF", "GW/Assets%", "ROIC%", "ROIC Med(y)", "EQ(y)",
-                   "GM% (σ,y)", "ATH%", "3M%", "Rule40 Hist"]
+                   "GM% (σ,y)", "ATH%", "3M%", "Rule40 Hist"] + (["Univ"] if multi else [])
         print(tabulate(rows, headers=headers, floatfmt=".1f"))
     else:
         print("  (empty — a strict screen producing no survivors is a valid result)")
@@ -315,8 +342,8 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
         print(f"\nWATCHLIST ({len(watchlist)}) — wonderful business, wrong price; "
               f"{UNLOCK_LABEL}; % = move from today's price:")
         for r in watchlist:
-            print(f"  {r.ticker} ({_short(r.name)}): {'; '.join(r.reasons)}"
-                  f" -> {_unlocks(r)}{_flags(r)}")
+            print(f"  {r.ticker} ({_short(r.name)}){_univ_tag(r, membership, multi)}: "
+                  f"{'; '.join(r.reasons)} -> {_unlocks(r)}{_flags(r)}")
 
     # --- needs data: every testable gate passed, PEG had no estimates to test ---
     if needs_data:
@@ -331,7 +358,8 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
               f"uncorrected OTC/ADR cap would finish the screen against a fictional "
               f"valuation):")
         for r in needs_data:
-            print(f"  {r.ticker} ({_short(r.name)}): Rule40 {_f(r.rule40)}, "
+            print(f"  {r.ticker} ({_short(r.name)}){_univ_tag(r, membership, multi)}: "
+                  f"Rule40 {_f(r.rule40)}, "
                   f"P/S {_f(r.p_s, 1)} vs guardrail {_f(r.ps_guardrail, 1)}, "
                   f"SBC {_f(r.sbc_pct)}%; {peg_untestable_reason(r.company)}"
                   f"{_flags(r)}")
@@ -345,7 +373,8 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
     if rejected:
         print("\nWhy names were rejected:")
         for r in rejected:
-            print(f"  {r.ticker} ({_short(r.name)}): {'; '.join(r.reasons)}{_flags(r)}")
+            print(f"  {r.ticker} ({_short(r.name)}){_univ_tag(r, membership, multi)}: "
+                  f"{'; '.join(r.reasons)}{_flags(r)}")
 
     # --- SBC assumed 0 review section ---
     if sbc_assumed:
@@ -375,7 +404,7 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
         print(f"\nPRE_REVENUE ({len(pre_revenue)}) — no trailing revenue; the firewall "
               f"fired before any metric math:")
         for r in pre_revenue:
-            print(f"  {r.ticker} ({_short(r.name)})")
+            print(f"  {r.ticker} ({_short(r.name)}){_univ_tag(r, membership, multi)}")
 
     # --- recent IPOs (unseasoned listings — set aside, never in the shortlist) ---
     if recent_ipos:
@@ -383,7 +412,8 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
               f"{args.ipo_seasoning_months} months; history-based gates have no "
               f"history and IPO-year base rates are hostile. Revisit once seasoned:")
         for r in recent_ipos:
-            print(f"  {r.ticker} ({_short(r.name)}): listed {r.company.ipo_date}")
+            print(f"  {r.ticker} ({_short(r.name)}){_univ_tag(r, membership, multi)}: "
+                  f"listed {r.company.ipo_date}")
 
     # --- insufficient history (cleared the snapshot, lacked annual history) ---
     if insufficient:
@@ -391,14 +421,23 @@ def _report(args, source, as_of, stale, tickers, results, skipped, names,
               f"but lacked a long enough annual record for the consistency gate:")
         for r in insufficient:
             c = r.consistency
-            print(f"  {r.ticker} ({_short(r.name)}): "
+            print(f"  {r.ticker} ({_short(r.name)}){_univ_tag(r, membership, multi)}: "
                   f"{c.years_available} of {c.years_required} yrs available")
 
     # --- could not source ---
     if skipped:
         print(f"\nCould not source ({len(skipped)}) — skipped, never fabricated:")
         for s in skipped:
-            print(f"  {s.ticker} ({_short(names.get(s.ticker, s.ticker))}): {s.reason}")
+            print(f"  {s.ticker} ({_short(names.get(s.ticker, s.ticker))})"
+                  f"{_univ_tag(s, membership, multi)}: {s.reason}")
+
+
+def _univ(r, membership: dict[str, list[str]]) -> str:
+    return ";".join(membership.get(r.ticker, []))
+
+
+def _univ_tag(r, membership: dict[str, list[str]], multi: bool) -> str:
+    return f" [{_univ(r, membership)}]" if multi else ""
 
 
 def _report_sector_context(survivors, results, sector_stats) -> None:

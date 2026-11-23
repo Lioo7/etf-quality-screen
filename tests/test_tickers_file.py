@@ -76,7 +76,7 @@ def test_cli_tickers_file_resolution(tmp_path):
     from etf_screen.cli import _resolve_universe, build_parser
     p = _write(tmp_path, "CHKP\nCYBR\n")
     args = build_parser().parse_args(["--tickers-file", str(p)])
-    tickers, source, _, stale, _, label = _resolve_universe(args)
+    tickers, source, _, stale, _, label, _ = _resolve_universe(args)
     assert tickers == ["CHKP", "CYBR"]
     assert "list.txt" in source and not stale
     assert label == "list"  # file stem names the run/export
