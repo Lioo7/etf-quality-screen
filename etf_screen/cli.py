@@ -11,6 +11,7 @@ fabricated: unsourced names are reported, not guessed.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from collections import Counter
@@ -554,7 +555,36 @@ def _flags(r: Result) -> str:
     return f"  [{' | '.join(tags)}]" if tags else ""
 
 
+#: The project-root ``.env`` (git-ignored): SEC_USER_AGENT, FMP_API_KEY.
+DOTENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
+
+def _load_dotenv(path: Path = DOTENV_PATH) -> None:
+    """Set ``KEY=value`` lines from ``path`` into the environment (#74).
+
+    Minimal and stdlib-only: ``#`` comments, blank lines and an ``export`` prefix are
+    skipped, and matching outer quotes are stripped. A variable already set is never
+    overridden. Values are never printed or logged; a missing or unreadable file is
+    silently ignored.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.removeprefix("export ").partition("=")
+        key, value = key.strip(), value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+            value = value[1:-1]
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
 def main(argv: list[str] | None = None) -> int:
+    _load_dotenv()
     args = build_parser().parse_args(argv)
     return run(args)
 

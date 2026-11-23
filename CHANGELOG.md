@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Missing quarters filled from SEC filings (#74, D25).** When Yahoo's TTM window
+  has a hole (D23), the quarter's filed 10-Q / 10-K value from SEC companyfacts fills
+  it, instead of a fallback to an annual figure up to 9 months stale. Only filed values
+  are used: a direct 3-month fact, or two year-to-date facts subtracted (FY − 9M for a
+  fiscal Q4); diluted shares only from a direct fact. Each line must match Yahoo within
+  1% on the quarters Yahoo reports. Every filled cell is flagged. US filers only. The
+  fill needs `SEC_USER_AGENT`, read from the project `.env` by the CLI (new minimal
+  loader). Without it, or on any SEC failure, the annual fallback stands with a note.
+  On the 2026-11-23 QQQ + SPY snapshot, 25 of 63 annual-fallback names return to TTM.
+  APH flips REJECTED → PASS (net debt / FCF 3.13 → 2.67). New module
+  `etf_screen/sec.py`; cache schema `v11`.
+
 - **PEG on one basis (#6, D1).** Growth no longer divides an analyst forward
   EPS by GAAP trailing EPS. Both providers now use the consensus EPS for the
   current and next fiscal year:

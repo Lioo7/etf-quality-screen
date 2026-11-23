@@ -127,7 +127,7 @@ Evidence: `docs/investigations/2026-11-growth-definition.md`.
 - A gap in revenue, net income, OCF, capex or either share count → the whole company moves to the annual basis, with `quarterly <line> missing for <date>`. When the latest FY ends at the newest quarter, the annual basis is the exact trailing year.
 - An SBC gap follows the #58 rule: annual basis when the annual statement reports SBC, else TTM with SBC assumed 0 (flagged). An EBIT gap stays advisory: ROIC is not computable, with the dated note, and the basis doesn't change.
 - FMP sums by record position, so a gap in its 8 income or 4 cash-flow records raises `DataUnavailable` with the date.
-- Nothing is summed across a gap, and nothing is filled. Thresholds are unchanged. The cache schema moves to v10.
+- Nothing is summed across a gap, and nothing is filled. Thresholds are unchanged. The cache schema moves to v10. (Amended by D25: a gap is now filled from the quarter's filed SEC value when one passes the checks.)
 
 **Reason.** `_row()` drops NaN cells, so "the newest 4" was the newest 4 *finite* cells: a missing quarter was replaced by the year-ago one. On 10 affected names, that sum missed SEC's true TTM revenue by −7.8% to +1.0% (median −2.5%). Each branch annual figure equals SEC's FY value exactly. On the 2026-11-22 QQQ + SPY snapshot, 53 names move from TTM to annual, and one verdict flips: APH PASS → REJECTED (net debt / FCF 3.1 on FY2025 FCF against post-acquisition debt; SEC's true TTM gives 2.68, so the stale fallback is wrong there). Most gaps sit in calendar 2026-06-30 (fiscal Q2), not fiscal Q4. #54's SEC data could later supply the missing quarter from 10-Q facts instead of the annual fallback.
 
@@ -143,3 +143,35 @@ Evidence: `docs/investigations/2026-11-ttm-gaps.md`.
 **Revisit** when a trend-mode Track A PASS or WATCHLIST name shows current ROIC < 10% that no blind spot explains. Check this in the monthly runs (D13).
 
 Evidence: `docs/investigations/2026-11-roic-trend.md`.
+
+## D25 — A quarter missing from Yahoo's window is filled from SEC filings (2026-11-23)
+**Data-sourcing change, not a spec change (#74); amends D23's "nothing is filled".** When D23 finds a cell missing in the TTM window, `YFinanceProvider` writes that quarter's filed value from SEC companyfacts (`etf_screen/sec.py`) into it before extraction. Basis selection, growth (D22) and every threshold are unchanged.
+
+- **Which cells.** A cell is filled only if `_extract_yf` reads it:
+  - revenue, net income, EBIT, OCF, capex and SBC at the 4 window dates;
+  - revenue at the year-ago column too;
+  - diluted shares at the newest and year-ago columns, only when a year-ago column exists and Yahoo's row is a diluted one.
+
+  A row Yahoo never reports is left to the #58 rules.
+- **Which values.** The fill takes us-gaap facts from 10-Q / 10-K (and their /A amendments) filed on or before the run date; the latest filing per period wins. The period end must match within ±10 days. A quarter is filled from:
+  - a direct 3-month fact;
+  - else YTD(n) − YTD(n−1), with FY − 9M YTD for a fiscal Q4. The subtracted YTD is the version filed by the minuend's filing, so a later recast can't mix bases.
+
+  Diluted shares come only from a direct 3-month weighted average. A non-positive revenue, capex, SBC or share quarter is rejected.
+- **Concept check.** Concepts are tried in a fixed order. One fills a line only if it agrees within 1% with every quarter Yahoo reports for that line (at least one), so a tag with another scope can't slip in.
+- **No partial fills.** If any revenue, net income, share, OCF or capex gap stays unfilled, no fill is kept, because the name is annual either way. A name that ends up annual for another reason drops its "from SEC" notes.
+- **Flags.** Each filled cell adds `Q <date> <line> from SEC <method>` to `low_confidence`.
+- **Scope and failure.** Statements must be in USD. The fill needs `SEC_USER_AGENT` (the CLI reads the git-ignored project `.env`, never overriding the shell, never printing values). Each request has a 10 s whole-download timeout, at most 10 requests/s, inside the 60 s per-ticker deadline. A network failure stops SEC requests for the rest of the run. Any failure keeps D23's annual fallback with `SEC fill failed: <cause> (gaps at <dates>)`, never skips the name, and is not cached for the day. The cache schema moves to v11.
+
+**Reason.** The 2026-06-30 vendor hole from #71 persists. On the 2026-11-23 QQQ + SPY snapshot (518 names), 63 names sit on the annual basis because of a dated gap. That fallback is an exact fiscal year but up to 9 months stale: median revenue error 4.8% against SEC's true TTM for the revenue-gap names, up to 30% (APH). With the fill:
+- 25 of the 63 return to TTM through 67 filed cells;
+- one verdict flips: APH REJECTED → PASS. Net debt / FCF moves from 3.13 to 2.67, and APH's revenue and FCF now equal SEC's true TTM exactly;
+- no name changes Track A / B routing, and no net income changes sign.
+
+The checks behind it:
+- **Masking test:** 20 gap-free names, one known cell blanked each. 16 fill and match Yahoo's value exactly; 4 correctly stay unfilled.
+- **Filing spot-check:** 22 filled cells in 5 names match the filings' own XBRL.
+
+**Kept out.** Non-US filers. Missing income columns (D23's step check still fails). 52/53-week filers whose Yahoo labels drift more than 10 days (COST). Replacing Yahoo as the main source. Point-in-time history (#54, which reuses `sec.py`).
+
+Evidence: `docs/investigations/2026-11-sec-fill.md`.

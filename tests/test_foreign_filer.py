@@ -244,7 +244,7 @@ def test_converted_flag_survives_the_cache_and_the_schema_is_current(tmp_path, m
     from etf_screen.providers import MockProvider
 
     monkeypatch.setattr(cache_mod, "CACHE_ROOT", tmp_path)
-    assert "market_cap_converted" in _COMPANY_FIELDS and _CACHE_SCHEMA == "v10"
+    assert "market_cap_converted" in _COMPANY_FIELDS and _CACHE_SCHEMA == "v11"
     cache = DiskCache("mock")
     stored = asdict(replace(MockProvider().fetch("MSFT"), market_cap_converted=True))
     provider = MockProvider(cache=cache)

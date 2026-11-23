@@ -1,4 +1,4 @@
-"""Data sourcing layer — the only place that touches the network.
+"""Data sourcing layer — with ``sec.py``, the only place that touches the network.
 
 A :class:`DataProvider` turns a ticker into a :class:`~etf_screen.screen.Company`
 of raw fundamentals. Providers **raise** :class:`DataUnavailable` when a required
@@ -24,6 +24,7 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict
 from datetime import date, timedelta
 
+from . import sec
 from .cache import DiskCache
 from .screen import (EPS_DECLINE_NOTE, FMP_CAUSE, GROWTH_BLEND_NOTE, MIXED_BASIS_CAUSE,
                      NON_US_CAUSE, ONE_OFF_UNAVAILABLE, AnnualPeriod, Company)
@@ -62,7 +63,9 @@ _COMPANY_FIELDS = (
 # pair, so its growth would read NOT_EVALUABLE instead of the estimate.
 # v10 (#71): TTM sums need a gap-free dated window; a v9 entry may hold a sum that
 # skipped a quarter and included the year-ago one.
-_CACHE_SCHEMA = "v10"
+# v11 (#74): a Yahoo window gap may be filled from SEC 10-Q / 10-K facts; a v10 entry
+# holds the annual fallback for a name that now screens on its exact TTM.
+_CACHE_SCHEMA = "v11"
 
 # Growth from a fiscal-year pair (#67, D22): within this many days of the newest
 # quarter the latest FY IS the trailing year (exact pair); up to the max lag (three
@@ -158,7 +161,9 @@ class DataProvider(ABC):
                 # to the dataclass defaults for newly added fields.
                 return Company(**{k: cached[k] for k in _COMPANY_FIELDS if k in cached})
         company = self._fetch_with_deadline(ticker)
-        if self._cache is not None:
+        # A failed or switched-off SEC fill (#74) may succeed on the next fetch: not cached.
+        retry = any(n.startswith(SEC_RETRY_PREFIXES) for n in company.low_confidence)
+        if self._cache is not None and not retry:
             self._cache.set(self._cache_key(ticker), asdict(company))
         return company
 
@@ -415,9 +420,21 @@ class YFinanceProvider(DataProvider):
       estimates request leaves PEG untestable (NEEDS_DATA path), never skips the name.
       Estimates in another currency than the price are converted at a same-run
       Yahoo FX rate (#46), cross-checked against Yahoo's ``forwardPE``.
+    * **A quarter missing from the TTM window is filled from SEC** (#74, D25) when
+      ``SEC_USER_AGENT`` is set: filed 10-Q / 10-K values only, each cell flagged.
+      Without the fill (unset, no fact, failure) D23's annual fallback stands.
     """
 
     name = "yfinance"
+
+    def __init__(self, cache: DiskCache | None = None,
+                 fetch_timeout: float = DEFAULT_FETCH_TIMEOUT, sec_client=None):
+        super().__init__(cache=cache, fetch_timeout=fetch_timeout)
+        if sec_client is None:
+            sec_cache = (DiskCache("sec", enabled=cache.enabled, refresh=cache.refresh)
+                         if cache is not None else None)
+            sec_client = sec.client_from_env(sec_cache)
+        self._sec = sec_client  # None: SEC_USER_AGENT unset, no fill
 
     def _fetch_uncached(self, ticker: str) -> Company:
         try:
@@ -441,18 +458,27 @@ class YFinanceProvider(DataProvider):
             closes = tk.history(period="max", auto_adjust=True)["Close"]
         except Exception:
             closes = None
-        return _extract_yf(
+        info = _info(tk)
+        # A gap in Yahoo's TTM window is filled from SEC filings before extraction
+        # (#74), inside this fetch's deadline; it never raises.
+        yahoo_q_inc = _df(tk, "quarterly_income_stmt", "quarterly_financials")
+        q_inc, q_cf, sec_notes = _sec_fill(
+            ticker, yahoo_q_inc, _df(tk, "quarterly_cashflow", "quarterly_cash_flow"),
+            info, self._sec, date.today())
+        company = _extract_yf(
             ticker,
-            q_inc=_df(tk, "quarterly_income_stmt", "quarterly_financials"),
+            q_inc=q_inc,
             a_inc=_df(tk, "income_stmt", "financials"),
-            q_cf=_df(tk, "quarterly_cashflow", "quarterly_cash_flow"),
+            q_cf=q_cf,
             a_cf=_df(tk, "cashflow", "cash_flow"),
-            info=_info(tk),
+            info=info,
             q_bal=q_bal, a_bal=a_bal, closes=closes,
             estimates=_yf_estimates(tk), fx_lookup=self._fx_rate,
             revenue_estimates=_yf_revenue_estimates(tk),
-            earnings_history=_yf_earnings_history(tk),
+            earnings_history=_yf_earnings_history(tk), fy0_q_inc=yahoo_q_inc,
         )
+        company.low_confidence.extend(_sec_notes_kept(company, sec_notes))
+        return company
 
 
 # Statement line labels (Yahoo varies these across versions/tickers).
@@ -484,7 +510,8 @@ _COGS = ["Cost Of Revenue", "Reconciled Cost Of Revenue"]
 
 def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
                 q_bal=None, a_bal=None, closes=None, estimates=None,
-                fx_lookup=None, revenue_estimates=None, earnings_history=None) -> Company:
+                fx_lookup=None, revenue_estimates=None, earnings_history=None,
+                fy0_q_inc=None) -> Company:
     """Build a Company from Yahoo statement frames, on a single consistent basis.
 
     Factored out of the provider (no network here) so the basis-selection and
@@ -497,6 +524,9 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
 
     ``fx_lookup(base, quote) -> (rate, as_of) | None`` is called only when the
     estimate currency differs from the price currency (#46); None -> no rate.
+
+    ``fy0_q_inc`` is Yahoo's unfilled quarterly income frame when ``q_inc`` carries SEC
+    fills (#74): the FY0 one-off check (D19) keeps reading Yahoo's own statements.
     """
     # Cash flow entirely absent -> genuinely no data -> skip the name.
     if q_cf is None and a_cf is None:
@@ -685,7 +715,8 @@ def _extract_yf(ticker, q_inc, a_inc, q_cf, a_cf, info,
     # One-off items inside consensus FY0 (#61): raw per-quarter pairs only; screen.py
     # decides. The "unavailable" note matters only where PEG decides the verdict.
     fy0_quarter_eps, street_basis, one_off_gap = _yf_fy0_quarter_eps(
-        earnings_history, q_inc, a_inc, info, est_ccy, date.today())
+        earnings_history, q_inc if fy0_q_inc is None else fy0_q_inc, a_inc, info, est_ccy,
+        date.today())
     if one_off_gap and net_income_ttm > 0 and forward_eps_growth is not None:
         low_conf.append(ONE_OFF_UNAVAILABLE.format(one_off_gap))
 
@@ -932,6 +963,132 @@ def _year_ago_column(q_inc, newest):
         if isinstance(col, date) and 350 <= (newest - col).days <= 380:
             return col
     return None
+
+
+# Lines the SEC fill may target (#74): (sec.LINES key, frame, Yahoo labels), each only
+# at the dates _extract_yf reads it: flows at the 4 window dates (revenue also at the
+# year-ago column), diluted shares at the newest and the year-ago column.
+_SEC_FILL_LINES = (
+    ("revenue", "inc", _REV), ("net income", "inc", _NET_INCOME),
+    ("operating income (EBIT)", "inc", _EBIT), ("diluted shares", "inc", _SHARES),
+    ("operating cash flow", "cf", _OCF), ("capex", "cf", _CAPEX), ("SBC", "cf", _SBC),
+)
+_SEC_YEAR_AGO_LINES = ("revenue", "diluted shares")
+_SEC_NEWEST_ONLY_LINES = ("diluted shares",)
+# A gap in one of these always moves the company to the annual basis (D23). If SEC
+# can't fill every such gap, no fill is kept: the name is annual either way. (SBC
+# follows #58 and EBIT is advisory, so their fills stand on their own.)
+_SEC_BASIS_LINES = ("revenue", "net income", "diluted shares", "operating cash flow", "capex")
+#: Notes that mark a Company not to cache: the fill may succeed on a later fetch.
+SEC_RETRY_PREFIXES = ("SEC fill failed:", "SEC fill off ")
+
+
+def _sec_fill_targets(q_inc, q_cf) -> list[tuple[str, object]]:
+    """``(line, quarter end)`` cells D23 would find missing in the TTM window (#74).
+
+    The window dates come from Yahoo's income columns (``_quarter_window``); a cash-flow
+    column absent at one of them is a gap in every cash-flow line. A row Yahoo doesn't
+    report at all is not a cell gap (the #58 rules handle it) and is never filled. Share
+    counts are targets only when a year-ago column exists (else none are read) and the
+    row Yahoo uses is a diluted one: a diluted SEC count never goes into a basic row.
+    """
+    window, _ = _quarter_window(q_inc, 4)
+    if window is None:
+        return []
+    year_ago = _year_ago_column(q_inc, window[0])
+    targets = []
+    for line, frame, labels in _SEC_FILL_LINES:
+        df = q_inc if frame == "inc" else q_cf
+        row = _labeled_row(df, labels)
+        if not row:
+            continue
+        if line == "diluted shares" and (year_ago is None or next(
+                lab for lab in labels if lab in df.index) == "Basic Average Shares"):
+            continue
+        dates = window[:1] if line in _SEC_NEWEST_ONLY_LINES else list(window)
+        if year_ago is not None and line in _SEC_YEAR_AGO_LINES:
+            dates.append(year_ago)
+        for d in dates:
+            if not any(isinstance(c, date) and abs((c - d).days) <= _Q_MATCH_DAYS
+                       for c in row):
+                targets.append((line, d))
+    return targets
+
+
+def _apply_sec_fill(q_inc, q_cf, facts, targets, today):
+    """Write SEC-filled values into copies of the frames; ``(q_inc, q_cf, notes)``.
+
+    Pure. The concept check compares SEC with the cells Yahoo reports in the ORIGINAL
+    frames, so a filled cell never vouches for another. A cash-flow column absent at
+    the target date is added (NaN elsewhere, so lines SEC can't fill stay gaps). When
+    a basis-deciding gap stays unfilled, the original frames come back with the notes.
+    """
+    frames = {"inc": q_inc.copy(), "cf": q_cf.copy()}
+    spec = {line: (frame, labels) for line, frame, labels in _SEC_FILL_LINES}
+    notes, open_gaps = [], []
+    for line, d in targets:
+        frame, labels = spec[line]
+        original = q_inc if frame == "inc" else q_cf
+        reported = {c: v for c, v in _labeled_row(original, labels).items()
+                    if isinstance(c, date)}
+        value, how = sec.fill_value(facts, line, d, reported, today)
+        if value is None:
+            notes.append(f"SEC has no usable fact for Q {d:%Y-%m-%d} {line} - not filled"
+                         + (f" ({how})" if how else ""))
+            if line in _SEC_BASIS_LINES:
+                open_gaps.append(f"{d:%Y-%m-%d} {line}")
+            continue
+        df = frames[frame]
+        label = next(lab for lab in labels if lab in df.index)  # the row _labeled_row reads
+        col = next((c for c in df.columns if isinstance(c, date)
+                    and abs((c - d).days) <= _Q_MATCH_DAYS), None)
+        if col is None:
+            df[d] = float("nan")
+            col = d
+        df.loc[label, col] = value
+        notes.append(f"Q {d:%Y-%m-%d} {line} from {how}")
+    if open_gaps:  # annual either way: keep Yahoo's frames, report what SEC lacked
+        return q_inc, q_cf, [n for n in notes if n.startswith("SEC has no usable fact")]
+    return frames["inc"], frames["cf"], notes
+
+
+def _sec_notes_kept(company, notes) -> list[str]:
+    """The fill notes for the Company's final basis (#74).
+
+    A name can still land on the annual basis after a fill, for a reason the fill
+    doesn't touch (a quarterly SBC row Yahoo never reports, #58). Its metrics then
+    come from the annual statements alone, so "Q ... from SEC" notes would mislead
+    and are dropped; why SEC couldn't help stays.
+    """
+    if company.basis == "TTM":
+        return list(notes)
+    return [n for n in notes if not n.startswith("Q ")]
+
+
+def _sec_fill(ticker, q_inc, q_cf, info, client, today):
+    """Fill D23 window gaps from SEC 10-Q / 10-K facts (#74, D25): ``(q_inc, q_cf, notes)``.
+
+    US filers only (statements in USD). No gap -> no request. No client (unset
+    ``SEC_USER_AGENT``) or any SEC failure -> the frames unchanged plus one dated note,
+    so D23's annual fallback stands. Never raises, never skips the name.
+    """
+    if q_inc is None or q_cf is None or (info or {}).get("financialCurrency") != "USD":
+        return q_inc, q_cf, []
+    targets = _sec_fill_targets(q_inc, q_cf)
+    if not targets:
+        return q_inc, q_cf, []
+    when = ", ".join(sorted({f"{d:%Y-%m-%d}" for _, d in targets}))
+    if client is None:
+        return q_inc, q_cf, [
+            f"SEC fill off ({sec.USER_AGENT_ENV} unset) - gaps at {when} not filled"]
+    try:
+        return _apply_sec_fill(q_inc, q_cf, client.companyfacts(ticker), targets, today)
+    except sec.SecError as exc:
+        cause = str(exc)
+    except (AttributeError, KeyError, TypeError, ValueError, OSError) as exc:
+        cause = f"malformed companyfacts ({type(exc).__name__})" if not isinstance(
+            exc, OSError) else f"{type(exc).__name__}"
+    return q_inc, q_cf, [f"SEC fill failed: {cause} (gaps at {when})"]
 
 
 def _fy_growth_pair(rev_by_fy: dict, rev_by_q: dict) -> tuple[float | None, float | None,
